@@ -34,6 +34,9 @@ class TpPartBaseModel:
     def __init__(self, kvargs):
         self.tp_rank_ = kvargs["tp_rank"]
         self.world_size_ = kvargs["world_size"]
+        self.tp_size_ = kvargs.get("tp_size", None)
+        if self.tp_size_ == 0:
+            self.tp_size_ = self.world_size_
         self.weight_dir_ = kvargs["weight_dir"]
         self.max_total_token_num = kvargs["max_total_token_num"]
         self.load_way = kvargs.get("load_way", "HF")
@@ -48,10 +51,10 @@ class TpPartBaseModel:
         self._verify_must()
         self._verify_params()
         self._init_weights()
+        self._init_some_value()
         self._init_mem_manager()
         self._init_req_manager()
         self._init_infer_layer()
-        self._init_some_value()
         self._init_custom()
         return
     
@@ -66,7 +69,6 @@ class TpPartBaseModel:
             self.config['vocab_size'] = self.finetune_config.vocab_size
         return
     
-    @final
     def _verify_must(self):
         assert self.config["num_attention_heads"] % self.world_size_ == 0
         return
@@ -322,4 +324,59 @@ class TpPartBaseModel:
         predict_logics = self.post_infer.splitfuse_forward(input_embs, infer_state, self.pre_post_weight, return_logics=True)
         return predict_logics
 
+
+class TpAndPpPartBaseModel(TpPartBaseModel):
+    def __init__(self, kvargs):
+        self.pp_rank_ = kvargs.get("pp_rank", None)
+        self.pp_size_ = kvargs.get("pp_size", None)
+        self.pre_and_post_rank_ = kvargs.get("pre_and_post_rank", [None, None])
+        super().__init__(kvargs)
+        
+    def _init_mem_manager(self):
+        
+        assert self.config["num_attention_heads"] % self.tp_size_ == 0
+        self.mem_manager = MemoryManager(self.max_total_token_num, 
+                            dtype=torch.float16,
+                            head_num=self.config["num_attention_heads"] // self.tp_size_,
+                            head_dim=self.config["n_embed"] // self.config["num_attention_heads"],
+                            layer_num=self.layers_num)
+        return
+
+    def _init_some_value(self):
+        self.head_dim_ = self.config["n_embed"] // self.config["num_attention_heads"]
+        self.tp_k_head_num_ = self.config["num_key_value_heads"] // self.tp_size_
+        self.tp_v_head_num_ = self.tp_k_head_num_
+        self.layers_num = self.config["n_layer"] // self.pp_size_
+        self.vocab_size = self.config["vocab_size"]
+        return
+        
+    def _verify_must(self):
+        assert self.config["num_attention_heads"] % self.tp_size_ == 0
+        return
+    
+    def _verify_params(self):
+        assert self.load_way == "HF", "only support HF format weights"
+        assert self.config["num_key_value_heads"] % self.tp_size_ == 0
+        return
+        
+    def _init_infer_layer(self):
+        assert self.config["n_layer"] % self.pp_size_ == 0, "please ensure n_layer % pp_size == 0"
+        
+        should_load_weight_layers_nums = self.config["n_layer"] // self.pp_size_
+        
+        self.pre_infer = self.pre_layer_infer_class(world_size=self.world_size_, network_config=self.config, mode=self.mode, pp_rank=self.pp_rank_, pp_size = self.pp_size_, tp_rank=self.tp_rank_, tp_size = self.tp_size_, pre_rank = self.pre_and_post_rank_[0])
+        self.post_infer = self.post_layer_infer_class(world_size=self.world_size_, network_config=self.config, mode=self.mode, pp_rank=self.pp_rank_, pp_size = self.pp_size_, tp_rank=self.tp_rank_, tp_size = self.tp_size_, post_rank =self.pre_and_post_rank_[1])
+        self.layers_infer = [
+            self.transformer_layer_infer_class(
+                layer_num=i,  #这里不传真正的层数，是因为每个进程中的kv cache都是从0开始计数的，每个进程保存x,x+y层，将x层标记为第0层，x+y层标记为第y层
+                world_size=self.world_size_,
+                network_config=self.config,
+                mode=self.mode,
+                tp_rank=self.tp_rank_,
+                pp_rank=self.pp_rank_,
+                pp_size=self.pp_size_,
+                tp_size=self.tp_size_
+                ) for i in range(
+                should_load_weight_layers_nums)]
+        return
     

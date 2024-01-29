@@ -12,6 +12,18 @@ from lightllm.server.io_struct import ReqRunStatus
 
 
 requests_mapping = {}
+pair_groups = {}
+all_reduce_groups = {}
+
+def get_pair_groups(src, dst):
+    if src is None or dst is None:
+        return None
+    return pair_groups.get((src, dst), None)
+
+def get_all_reduce_groups(src):
+    if src == None:
+        return None
+    return all_reduce_groups.get(src, None)
 
 class InferSamplingParams:
 

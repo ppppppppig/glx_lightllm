@@ -37,6 +37,7 @@ from .infer_batch import requests_mapping
 from .infer_batch import InferReq
 from lightllm.server.io_struct import ReqRunStatus
 from lightllm.utils.log_utils import init_logger
+from .infer_batch import pair_groups, all_reduce_groups
 
 
 class ModelRpcServer(rpyc.Service):
@@ -57,15 +58,52 @@ class ModelRpcServer(rpyc.Service):
         self.is_splitfuse_mode = kvargs.get("is_splitfuse_mode", False)
         self.splitfuse_block_size = kvargs.get("splitfuse_block_size", None)
         self.return_all_prompt_logprobs = kvargs.get("return_all_prompt_logprobs", False)
+        self.pp_rank = kvargs.get("pp_rank", 0)
+        self.pp_size = kvargs.get("pp_size", 1)
+        self.tp_size = kvargs.get("tp_size", 0)
+        self.pre_and_post_rank = kvargs.get("pre_and_post_rank", [-1, -1])
+        self.all_reduce_rank = kvargs.get("all_reduce_rank", [])
+        self.gpu_rank = self.tp_rank * self.pp_size + self.pp_rank
 
         self.cache = {}
         self.logger = init_logger(__name__)
 
         weight_dir = kvargs["weight_dir"]
         max_total_token_num = kvargs["max_total_token_num"]
-
-        dist.init_process_group('nccl', init_method=f'tcp://127.0.0.1:{kvargs["nccl_port"]}', rank=self.tp_rank, world_size=world_size)
-        torch.cuda.set_device(self.tp_rank)
+        if (self.pp_size > 1):
+            gpu_rank = self.gpu_rank
+            backend = 'nccl'
+            self.logger.info(f"pre {self.pre_and_post_rank[0]} and post {self.pre_and_post_rank[1]}")
+            self.logger.info(f"tp_rank: {self.tp_rank}, pp_rank: {self.pp_rank}, gpu_rank: {gpu_rank}, world_size: {world_size}, pre_rank: {self.pre_and_post_rank[0]}, post_rank: {self.pre_and_post_rank[1]}")
+            dist.init_process_group(backend, init_method=f'tcp://127.0.0.1:{kvargs["nccl_port"]}', rank=gpu_rank, world_size=world_size)
+            
+            # 构造tp的组
+            for pp_rank in range(self.pp_size):
+                gpu_rank_list = [tp_rank * self.pp_size + pp_rank for tp_rank in range(self.tp_size)]
+                last_rank = None
+                for new_rank in gpu_rank_list:
+                    if last_rank is None:
+                        all_reduce_groups[new_rank] = torch.distributed.new_group(ranks=gpu_rank_list, backend='nccl')
+                    else:
+                        all_reduce_groups[new_rank] = all_reduce_groups[last_rank] 
+                    last_rank = new_rank
+            
+            # 构造pp的组
+            for tp_rank in range(self.tp_size):
+                for pp_rank in range(self.pp_size):
+                    new_rank = tp_rank * self.pp_size + pp_rank
+                    pre_rank = tp_rank * self.pp_size + pp_rank - 1 if pp_rank > 0 else None
+                    next_rank = tp_rank * self.pp_size + pp_rank + 1 if pp_rank < self.pp_size - 1 else None
+                    if pre_rank is not None:
+                        pair_groups[(new_rank, pre_rank)] = pair_groups[(pre_rank, new_rank)]
+                    if next_rank is not None:
+                        pair_groups[(new_rank, next_rank)] = torch.distributed.new_group(ranks=[new_rank, next_rank], backend='nccl')
+                
+            torch.cuda.set_device(gpu_rank)
+        else:
+            self.logger.info(f"tp_rank: {self.tp_rank},  world_size: {world_size}")
+            dist.init_process_group('nccl', init_method=f'tcp://127.0.0.1:{kvargs["nccl_port"]}', rank=self.tp_rank, world_size=world_size)
+            torch.cuda.set_device(self.tp_rank)
 
         model_cfg, _ = PretrainedConfig.get_config_dict(
             weight_dir
@@ -73,6 +111,7 @@ class ModelRpcServer(rpyc.Service):
 
         model_kvargs = {
             "tp_rank": self.tp_rank,
+            "tp_size": self.tp_size,
             "world_size": self.world_size,
             "weight_dir": weight_dir,
             "max_total_token_num": max_total_token_num,
@@ -80,7 +119,10 @@ class ModelRpcServer(rpyc.Service):
             "mode": self.mode,
             "max_req_num": kvargs.get("max_req_num", 1000),
             "max_seq_length": kvargs.get("max_seq_length", 1024 * 5),
-            "return_all_prompt_logprobs": self.return_all_prompt_logprobs
+            "return_all_prompt_logprobs": self.return_all_prompt_logprobs,
+            "pp_rank": self.pp_rank,
+            "pp_size": self.pp_size,
+            "pre_and_post_rank": self.pre_and_post_rank
         }
 
         try:
@@ -215,6 +257,39 @@ class ModelRpcServer(rpyc.Service):
         # torch.cuda.empty_cache()
         return
     
+    # 更新前面所有组的统计信息
+    def exposed_add_tokens(self, req_ids, next_token_ids):
+        decode_reqs, prefill_reqs = [], []
+        for request_id in req_ids:
+            req : InferReq = requests_mapping[request_id]
+            if req.cur_kv_len == len(req.input_token_ids) - 1:
+                decode_reqs.append(req)
+            elif req.cur_kv_len < len(req.input_token_ids) - 1:
+                prefill_reqs.append(req)
+        all_reqs = decode_reqs
+        all_reqs.extend(prefill_reqs)
+        decode_req_num = len(decode_reqs)
+        index = 0
+        for req_obj, next_token_id in zip(all_reqs, next_token_ids):
+            if index < decode_req_num:
+                req_obj.cur_kv_len = len(req_obj.input_token_ids)
+                req_obj.input_token_ids.append(next_token_id)
+            else:
+                old_input_token_size = len(req_obj.input_token_ids)
+                split_len = min(old_input_token_size - req_obj.cur_kv_len, self.splitfuse_block_size)
+                if req_obj.cur_kv_len + split_len == old_input_token_size:
+                    # 有输出
+                    req_obj.cur_kv_len = old_input_token_size
+                    req_obj.input_token_ids.append(next_token_id)
+                elif req_obj.cur_kv_len + split_len < old_input_token_size:
+                    # 没输出
+                    req_obj.cur_kv_len = req_obj.cur_kv_len + split_len
+                else:
+                    assert False, "error state"
+            index += 1
+        return
+
+    
     # @calculate_time(show=True, min_cost_ms=150)
     def forward(self, batch_id, is_prefill):
         # special code for return all prompt_logprobs
@@ -312,8 +387,10 @@ class ModelRpcServer(rpyc.Service):
         decode_req_num = len(decode_reqs)
         all_reqs = decode_reqs
         all_reqs.extend(prefill_reqs)
-
         logits = self.model.splitfuse_forward(**kwargs)
+        if self.pp_size != 1 and self.pp_rank != self.pp_size - 1:
+            self.cache[batch.batch_id] = batch
+            return output_dict
         next_token_ids, next_token_probs = sample(logits, all_reqs)
         next_token_ids = next_token_ids.detach().cpu().numpy()
         next_token_logprobs = torch.log(next_token_probs).detach().cpu().numpy()
@@ -376,6 +453,7 @@ class ModelRpcClient:
             self._filter_batch = async_wrap(self.model.filter_batch)
             self._merge_batch = async_wrap(self.model.merge_batch)
             self._remove_batch = async_wrap(self.model.remove_batch)
+            self._add_tokens = async_wrap(self.model.add_tokens)
         else:
             self._init_model = self.model.exposed_init_model
             self._add_batch = self.model.exposed_add_batch
@@ -385,6 +463,7 @@ class ModelRpcClient:
             self._filter_batch = self.model.exposed_filter_batch
             self._merge_batch = self.model.exposed_merge_batch
             self._remove_batch = self.model.exposed_remove_batch
+            self._add_tokens = self.model.exposed_add_tokens
         return
 
     async def init_model(self, kvargs):
@@ -442,6 +521,14 @@ class ModelRpcClient:
 
     async def remove_batch(self, batch_id):
         ans = self._remove_batch(batch_id)
+        if self.use_rpc:
+            await ans
+            return
+        else:
+            return
+
+    async def add_tokens(self, req_ids, next_token_ids):
+        ans = self._add_tokens(req_ids, next_token_ids)
         if self.use_rpc:
             await ans
             return

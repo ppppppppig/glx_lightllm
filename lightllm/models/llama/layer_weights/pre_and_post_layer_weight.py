@@ -4,13 +4,15 @@ from lightllm.common.basemodel import PreAndPostLayerWeight
 
 
 class LlamaPreAndPostLayerWeight(PreAndPostLayerWeight):
-    def __init__(self, tp_rank, world_size, data_type, network_config, mode):
-        super().__init__(tp_rank, world_size, data_type, network_config, mode)
+    def __init__(self, tp_rank, world_size, data_type, network_config, mode, pp_rank = None, pp_size = None, tp_size = None):
+        if tp_size is None:
+            tp_size = world_size
+        super().__init__(tp_rank, world_size, data_type, network_config, mode, pp_rank, pp_size, tp_size)
         return
 
     def load_hf_weights(self, weights):
         vob_size = self.network_config_["vocab_size"]
-        split_vob_size = vob_size // self.world_size_
+        split_vob_size = vob_size // self.tp_size_
         n_embed = self.network_config_["hidden_size"]
         if "model.embed_tokens.weight" in weights:
             # print(weights['model.embed_tokens.weight'].shape)

@@ -11,13 +11,13 @@ from lightllm.common.basemodel.layer_weights.hf_load_utils import load_hf_weight
 
 from lightllm.models.llama.infer_struct import LlamaInferStateInfo
 from lightllm.models.llama.splitfuse_infer_struct import LlamaSplitFuseInferStateInfo
-from lightllm.common.basemodel import TpPartBaseModel
+from lightllm.common.basemodel import TpAndPpPartBaseModel, TpPartBaseModel
 from lightllm.common.mem_utils import select_mem_manager_class
 from lightllm.utils.log_utils import init_logger
 
 logger = init_logger(__name__)
 
-class LlamaTpPartModel(TpPartBaseModel):
+class LlamaTpPartModel(TpAndPpPartBaseModel):
     # weight class
     pre_and_post_weight_class = LlamaPreAndPostLayerWeight
     transformer_weight_class = LlamaTransformerLayerWeight
@@ -49,16 +49,16 @@ class LlamaTpPartModel(TpPartBaseModel):
 
     def _verify_params(self):
         assert self.load_way in ["HF", "DS"], "llama only supports HF and DS format to load Now!"
-        assert self.config["num_key_value_heads"] % self.world_size_ == 0
-        assert self.config["num_attention_heads"] % self.world_size_ == 0
+        assert self.config["num_key_value_heads"] % self.tp_size_ == 0
+        assert self.config["num_attention_heads"] % self.tp_size_ == 0
         return
     
     def _init_mem_manager(self):
         self.mem_manager = select_mem_manager_class(self.mode)(self.max_total_token_num, 
                                                      dtype=torch.float16,
-                                                     head_num=self.config["num_key_value_heads"] // self.world_size_,
+                                                     head_num=self.config["num_key_value_heads"] // self.tp_size_,
                                                      head_dim=self.config["hidden_size"] // self.config["num_attention_heads"],
-                                                     layer_num=self.config["num_hidden_layers"])
+                                                     layer_num=self.config["num_hidden_layers"] // self.pp_size_)
         return
 
     def _init_custom(self):
@@ -74,30 +74,57 @@ class LlamaTpPartModel(TpPartBaseModel):
         return
 
     def _init_weights(self):
-        self.pre_post_weight = self.pre_and_post_weight_class(self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode)
-        self.trans_layers_weight = [
-            self.transformer_weight_class(i, self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode)
-            for i in range(self.config["n_layer"])
-        ]
-        if self.load_way == 'HF':
-            load_hf_weights(
-                "fp16",
-                weight_dir=self.weight_dir_,
-                pre_post_layer=self.pre_post_weight,
-                transformer_layer_list=self.trans_layers_weight,
-                weight_dict=self.weight_dict)
+        if self.pp_size_ == 1:
+            self.pre_post_weight = self.pre_and_post_weight_class(self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode)
+            self.trans_layers_weight = [
+                self.transformer_weight_class(i, self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode)
+                for i in range(self.config["n_layer"])
+            ]
+            if self.load_way == 'HF':
+                load_hf_weights(
+                    "fp16",
+                    weight_dir=self.weight_dir_,
+                    pre_post_layer=self.pre_post_weight,
+                    transformer_layer_list=self.trans_layers_weight,
+                    weight_dict=self.weight_dict)
+            else:
+                load_ds_weights(
+                    "fp16",
+                    weight_dir=self.weight_dir_,
+                    pre_post_layer=self.pre_post_weight,
+                    transformer_layer_list=self.trans_layers_weight,
+                    weight_dict=self.weight_dict,
+                    prefix='model.layers.',
+                    num_layer=self.config["n_layer"])
+            self.pre_post_weight.verify_load()  
         else:
-            load_ds_weights(
-                "fp16",
-                weight_dir=self.weight_dir_,
-                pre_post_layer=self.pre_post_weight,
-                transformer_layer_list=self.trans_layers_weight,
-                weight_dict=self.weight_dict,
-                prefix='model.layers.',
-                num_layer=self.config["n_layer"])
-        self.pre_post_weight.verify_load()
-        [weight.verify_load() for weight in self.trans_layers_weight]            
-        return 
+            assert self.config["n_layer"] % self.pp_size_ == 0
+            logger.info(f"layer nums is {self.config['n_layer']}, pp_size is {self.pp_size_}")
+            should_load_weight_layers_nums = self.config["n_layer"] // self.pp_size_
+            start_layer_idx = self.pp_rank_ * should_load_weight_layers_nums
+            if self.pp_rank_ == 0 or self.pp_rank_ == self.pp_size_ - 1:
+                self.pre_post_weight = self.pre_and_post_weight_class(self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode, pp_rank=self.pp_rank_, pp_size=self.pp_size_, tp_size = self.tp_size_)
+            else:
+                self.pre_post_weight = None
+            self.trans_layers_weight = [
+                self.transformer_weight_class(i + start_layer_idx, self.tp_rank_, self.world_size_, torch.float16, network_config=self.config, mode=self.mode, pp_rank=self.pp_rank_, pp_size=self.pp_size_, tp_size=self.tp_size_)
+                for i in range(should_load_weight_layers_nums)
+            ]
+            logger.info(f"pp_rank: {self.pp_rank_}, load_layer_num: {should_load_weight_layers_nums}")
+            if self.load_way == 'HF':
+                load_hf_weights(
+                    "fp16",
+                    weight_dir=self.weight_dir_,
+                    pre_post_layer=self.pre_post_weight,
+                    transformer_layer_list=self.trans_layers_weight,
+                    weight_dict=self.weight_dict)
+            else:
+                logger.error(f"pp only load hf weight")
+            if self.pp_rank_ == 0 or self.pp_rank_ == self.pp_size_ - 1:
+                self.pre_post_weight.verify_load()
+                
+        [weight.verify_load() for weight in self.trans_layers_weight]  
+        return
 
     def _init_to_get_rotary(self, default_base=10000):
         if self.config.get("rope_scaling", {}) is None:

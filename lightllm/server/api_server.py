@@ -322,6 +322,8 @@ def main():
                         help="the max size for forward requests in the same time")
     parser.add_argument("--tp", type=int, default=1,
                         help="model tp parral size, the default is 1")
+    parser.add_argument("--pp", type=int, default=1,
+                        help="model pp parral size, the default is 1")
     parser.add_argument("--max_req_input_len", type=int, default=2048,
                         help="the max value for req input tokens num")
     parser.add_argument("--max_req_total_len", type=int, default=2048 + 1024,
@@ -402,9 +404,8 @@ def main():
             batch_max_tokens = int(1 / 6 * args.max_total_token_num)
             batch_max_tokens = max(batch_max_tokens, args.splitfuse_block_size)
             args.batch_max_tokens = batch_max_tokens
-
     can_use_ports = alloc_can_use_network_port(
-        num=5 + args.tp, used_nccl_port=args.nccl_port
+        num=5 + args.tp * args.pp, used_nccl_port=args.nccl_port
     )
     router_port, detokenization_port, httpserver_port, visual_port, cache_port = can_use_ports[0:5]
     model_rpc_ports = can_use_ports[5:]

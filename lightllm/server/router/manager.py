@@ -18,7 +18,7 @@ from .stats import Stats
 from .pause_strategy import Fcfs, select_paused_reqs
 from ..tokenizer import get_tokenizer
 from lightllm.utils.log_utils import init_logger
-
+from collections import deque
 logger = init_logger(__name__)
 
 
@@ -27,16 +27,24 @@ class RouterManager:
     def __init__(self, args, router_port, detokenization_port, model_rpc_ports):
         self.args = args
         self.model_weightdir = args.model_dir
-        self.world_size = args.tp
+        self.world_size = args.tp * args.pp
+        self.tp_size = args.tp
+        self.pp_size = args.pp
         self.load_way = args.load_way
         self.mode = args.mode
         self.max_total_token_num = args.max_total_token_num
         
         self.pause_strategy = Fcfs()
+        self.running_batch_list: Batch = [None] * self.pp_size
         self.running_batch: Batch = None
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
         self.max_wait_tokens = 10
+        self.counter_count = 0
+        
+        self.pp_deque_list = []
+        for idx in range(args.pp + 1):
+            self.pp_deque_list.append(deque())
         
         context = zmq.asyncio.Context(2)
         self.recv_from_httpserver = context.socket(zmq.PULL)
@@ -55,6 +63,21 @@ class RouterManager:
         self.stats_tool = Stats(not args.disable_log_stats, args.log_stats_interval)
         return
 
+    def compute_pre_and_post_rank(self, tp_rank, pp_rank):
+        ans_left, ans_right = -1, -1
+        if pp_rank:
+            ans_left = tp_rank * self.pp_size + pp_rank - 1
+        if pp_rank != self.pp_size - 1:
+            ans_right = tp_rank * self.pp_size + pp_rank + 1
+        print(f"pre_rank: {ans_left}, post_rank: {ans_right}")
+        return [ans_left, ans_right]
+        
+    def compute_all_reduce_rank(self, tp_rank, pp_rank):
+        ans_list = []
+        for i in range(self.tp_size):
+            ans_list.append(i * self.pp_size + pp_rank)
+        return ans_list
+
     async def wait_to_model_ready(self):
         # 初始化模型
         self.model_rpcs: List[ModelRpcClient] = []
@@ -63,22 +86,48 @@ class RouterManager:
             self.model_rpcs.append(rpc_model)
 
         init_model_ret = []
-        for rank_id in range(self.world_size):  # async init model process
-            kvargs = {
-                "rank_id" : rank_id,
-                "world_size" : self.world_size,
-                "weight_dir" : self.model_weightdir,
-                "load_way" : self.load_way,
-                "max_total_token_num" : self.max_total_token_num,
-                "mode" : self.mode,
-                "max_req_num" : self.args.running_max_req_size + 8,
-                "max_seq_length" : self.args.max_req_total_len + 8, # 留一点余量
-                "nccl_port" : self.args.nccl_port,
-                "is_splitfuse_mode" : self.is_splitfuse_mode,
-                "splitfuse_block_size" : self.splitfuse_block_size,
-                "return_all_prompt_logprobs" : self.args.return_all_prompt_logprobs
-            }
-            init_model_ret.append(self.model_rpcs[rank_id].init_model(kvargs))
+        if self.pp_size == 1:
+            for rank_id in range(self.world_size):  # async init model process
+                kvargs = {
+                    "rank_id" : rank_id,
+                    "world_size" : self.world_size,
+                    "weight_dir" : self.model_weightdir,
+                    "load_way" : self.load_way,
+                    "max_total_token_num" : self.max_total_token_num,
+                    "mode" : self.mode,
+                    "max_req_num" : self.args.running_max_req_size + 8,
+                    "max_seq_length" : self.args.max_req_total_len + 8, # 留一点余量
+                    "nccl_port" : self.args.nccl_port,
+                    "is_splitfuse_mode" : self.is_splitfuse_mode,
+                    "splitfuse_block_size" : self.splitfuse_block_size,
+                    "return_all_prompt_logprobs" : self.args.return_all_prompt_logprobs
+                }
+                init_model_ret.append(self.model_rpcs[rank_id].init_model(kvargs))
+        else:
+            tp_size = self.world_size // self.pp_size
+            for pp_rank in range(self.pp_size):
+                for tp_rank in range(tp_size):  # async init model process
+                    new_rank = tp_rank * self.pp_size + pp_rank
+                    kvargs = {
+                        "rank_id" : tp_rank,
+                        "tp_size" : self.tp_size,
+                        "world_size" : self.world_size,
+                        "weight_dir" : self.model_weightdir,
+                        "load_way" : self.load_way,
+                        "max_total_token_num" : self.max_total_token_num,
+                        "mode" : self.mode,
+                        "max_req_num" : self.args.running_max_req_size + 8,
+                        "max_seq_length" : self.args.max_req_total_len + 8, # 留一点余量
+                        "nccl_port" : self.args.nccl_port,
+                        "is_splitfuse_mode" : self.is_splitfuse_mode,
+                        "splitfuse_block_size" : self.splitfuse_block_size,
+                        "return_all_prompt_logprobs" : self.args.return_all_prompt_logprobs,
+                        "pp_rank": pp_rank,
+                        "pp_size": self.pp_size,
+                        "pre_and_post_rank": self.compute_pre_and_post_rank(tp_rank, pp_rank),
+                        "all_reduce_rank": self.compute_all_reduce_rank(tp_rank, pp_rank)
+                    }
+                    init_model_ret.append(self.model_rpcs[new_rank].init_model(kvargs))
 
         await asyncio.gather(*init_model_ret)
 
@@ -139,7 +188,7 @@ class RouterManager:
                 req.finish_status = FinishStatus.FINISHED_ABORT
         return
 
-    async def loop_for_fwd(self,):
+    async def loop_for_fwd(self):
         counter_count = 0
         while True:
             await self._step()
@@ -158,6 +207,73 @@ class RouterManager:
                 
             if self.running_batch is None:
                 await asyncio.sleep(0.01)  # 10ms
+                
+    async def loop_for_fwd_add_pp(self, fwd_rank_id):
+        
+        while True:
+            await self._pp_step(fwd_rank_id)
+            self.counter_count += 1
+            running_batch = self.running_batch_list[fwd_rank_id]
+            if running_batch is not None:
+                if self.counter_count % 50 == 0:
+                    total_used_tokens = self.prompt_cache_used_tokens + running_batch.batch_used_tokens + self.req_queue.pause_req_used_tokens
+                    token_ratio = total_used_tokens / self.max_total_token_num
+                    logger.debug(
+                        f"current batch size: {len(running_batch.reqs)} " 
+                        f"paused req num: {len(self.req_queue.pause_req_dict)} "
+                        f"token used ratio: {token_ratio} "
+                    )
+                    pass
+                self.stats_tool.print_stats()
+                
+            if running_batch is None:
+                await asyncio.sleep(0.01)  # 10ms
+
+    async def _pp_step(self, rank_id):
+        """
+        事件处理循环
+        """
+        # 删除所有已经 finished 的 req
+        # 当前无运行请求时
+        if self.running_batch_list[rank_id] is None:
+            new_batch = self.req_queue.generate_new_batch(self.running_batch_list[rank_id])
+            if new_batch is not None:
+                self.stats_tool.count_prompt_tokens(new_batch)
+                self.running_batch_list[rank_id] = new_batch
+                print(f"rank_id: {rank_id}")
+                await self._prefill_batch(self.running_batch_list[rank_id])
+                self._pp_filter_runing_batch(rank_id)
+                self.has_wait_tokens = 0
+            return
+
+        # 有运行请求，但是已经到了可以调度新的请求合并推理的时机
+        if self.has_wait_tokens >= self.max_wait_tokens:
+            new_mini_batch = self.req_queue.generate_new_batch(self.running_batch_list[rank_id])
+            self.has_wait_tokens = 0
+            if new_mini_batch is not None:
+                self.stats_tool.count_prompt_tokens(new_mini_batch)
+                await self._prefill_batch(new_mini_batch)
+                if not new_mini_batch.is_clear():
+                    await self._merge_batch(self.running_batch_list[rank_id], new_mini_batch)
+                    self.running_batch_list[rank_id].merge(new_mini_batch)
+                return
+
+        # 正常 decode 阶段， 如果可以直接decode就直接decode，否则通过暂停策略暂停一些请求
+        # 释放一些管理的 token
+        if self._can_decode(self.running_batch_list[rank_id]):
+            self.stats_tool.count_output_tokens(self.running_batch_list[rank_id])
+            await self._decode_batch(self.running_batch_list[rank_id])
+            self._pp_filter_runing_batch(rank_id)
+            self.has_wait_tokens += 1
+            return
+        else:
+            # pause strategy
+            paused_reqs = select_paused_reqs(self.running_batch_list[rank_id], self.pause_strategy, self.req_queue, self.max_total_token_num)
+            await self._pause_reqs(self.running_batch_list[rank_id], paused_reqs)
+            logger.debug(f"pasued req num: {len(self.req_queue.pause_req_dict)}")
+            self.has_wait_tokens = 0
+            return
+        return
 
     async def _step(self):
         """
@@ -251,19 +367,47 @@ class RouterManager:
         return
 
     async def _decode_batch(self, batch:Batch):
-        rets = [self.model_rpcs[tp_rank].decode_batch(batch.batch_id) for tp_rank in range(self.world_size)]
-        ans = await asyncio.gather(*rets)
-        if self.world_size != 1:
-            req_to_out_status = obtain(ans[0])
-        else:
-            req_to_out_status = ans[0]
+        if self.pp_size == 1:
+            rets = [self.model_rpcs[tp_rank].decode_batch(batch.batch_id) for tp_rank in range(self.world_size)]
+            ans = await asyncio.gather(*rets)
+            if self.world_size != 1:
+                req_to_out_status = obtain(ans[0])
+            else:
+                req_to_out_status = ans[0]
 
-        self._update_out_status_to_batch(batch, req_to_out_status)
-        unfinished_req_ids, finished_req_ids = batch.mark_and_get_finished_req_and_preupdate_status(self.eos_id)
-        self._send_to_detokenization_proc(batch, req_to_out_status)
-        batch.filter_out_finished_req(unfinished_req_ids, finished_req_ids)
-        await self._handle_finish_req(batch, unfinished_req_ids, finished_req_ids)
-        return
+            self._update_out_status_to_batch(batch, req_to_out_status)
+            unfinished_req_ids, finished_req_ids = batch.mark_and_get_finished_req_and_preupdate_status(self.eos_id)
+            self._send_to_detokenization_proc(batch, req_to_out_status)
+            batch.filter_out_finished_req(unfinished_req_ids, finished_req_ids)
+            await self._handle_finish_req(batch, unfinished_req_ids, finished_req_ids)
+            return
+        else:
+            rets = []
+            for pp_rank in range(self.pp_size):
+                for tp_rank in range(self.tp_size):
+                    new_rank = tp_rank * self.pp_size + pp_rank
+                    rets.append(self.model_rpcs[new_rank].decode_batch(batch.batch_id))
+            ans = await asyncio.gather(*rets)    
+            if self.world_size != 1:
+                req_to_out_status = obtain(ans[-1])
+                
+                # 使用这个结果更新下前面的结果
+                temp_rets = []
+                for pp_rank in range(self.pp_size - 1):
+                    for tp_rank in range(self.tp_size):
+                        new_rank = tp_rank * self.pp_size + pp_rank
+                        temp_rets.append(self.model_rpcs[new_rank].add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
+                        
+                await asyncio.gather(*temp_rets)   
+            else:
+                req_to_out_status = ans[0]
+            self._update_out_status_to_batch(batch, req_to_out_status)
+            unfinished_req_ids, finished_req_ids = batch.mark_and_get_finished_req_and_preupdate_status(self.eos_id)
+            self._send_to_detokenization_proc(batch, req_to_out_status)
+            batch.filter_out_finished_req(unfinished_req_ids, finished_req_ids)
+            await self._handle_finish_req(batch, unfinished_req_ids, finished_req_ids)
+            return
+                    
 
     async def _filter_batch(self, batch: Batch, unfinished_req_ids, finished_req_ids: List):
         rets = [self.model_rpcs[tp_rank].filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
@@ -297,6 +441,11 @@ class RouterManager:
     def _filter_runing_batch(self):
         if self.running_batch is not None and self.running_batch.is_clear():
             self.running_batch = None
+            return
+
+    def _pp_filter_runing_batch(self, rank_id):
+        if self.running_batch_list[rank_id] is not None and self.running_batch_list[rank_id].is_clear():
+            self.running_batch_list[rank_id] = None
             return
     
     def _update_init_status_to_batch(self, batch: Batch, req_to_req_status):
@@ -390,6 +539,14 @@ def start_router_process(args, router_port, detokenization_port, model_rpc_ports
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.create_task(router.loop_for_fwd())
+    # if (args.pp == 1):
+    for rank_id in range(args.pp):
+        loop.create_task(router.loop_for_fwd_add_pp(rank_id))
+    # loop.create_task(router.loop_for_fwd())
+    # else:
+    #     for pp_rank in range(args.pp):
+    #         loop.create_task(router.loop_for_pp_rank_fwd(pp_rank))
+    #     loop.create_task(router.loop_for_pp_add_new_batch())
+        
     loop.run_until_complete(router.loop_for_netio_req())
     return

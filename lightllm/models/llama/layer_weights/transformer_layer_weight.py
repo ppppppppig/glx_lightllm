@@ -5,8 +5,10 @@ from lightllm.common.basemodel import TransformerLayerWeight
 
 
 class LlamaTransformerLayerWeight(TransformerLayerWeight):
-    def __init__(self, layer_num, tp_rank, world_size, data_type, network_config, mode=[]):
-        super().__init__(layer_num, tp_rank, world_size, data_type, network_config, mode)
+    def __init__(self, layer_num, tp_rank, world_size, data_type, network_config, mode=[], pp_rank=0, pp_size=1, tp_size=None):
+        if tp_size is None:
+            tp_size = world_size
+        super().__init__(layer_num, tp_rank, world_size, data_type, network_config, mode, pp_rank, pp_size, tp_size)
         return
 
     def load_hf_weights(self, weights):
@@ -36,8 +38,8 @@ class LlamaTransformerLayerWeight(TransformerLayerWeight):
             self.att_norm_weight_ = self._cuda(weights[f"model.layers.{self.layer_num_}.input_layernorm.weight"])
 
         n_embed = self.network_config_["hidden_size"]
-        q_split_n_embed = n_embed // self.world_size_
-        kv_split_n_embed = n_embed // self.network_config_["num_attention_heads"] * self.network_config_["num_key_value_heads"] // self.world_size_
+        q_split_n_embed = n_embed // self.tp_size_
+        kv_split_n_embed = n_embed // self.network_config_["num_attention_heads"] * self.network_config_["num_key_value_heads"] // self.tp_size_
         # q k v weights for llama
         if f"model.layers.{self.layer_num_}.self_attn.q_proj.weight" in weights:
             self.q_weight_ = weights[f"model.layers.{self.layer_num_}.self_attn.q_proj.weight"]
@@ -66,7 +68,7 @@ class LlamaTransformerLayerWeight(TransformerLayerWeight):
             self.ffn_norm_weight_ = self._cuda(weights[f"model.layers.{self.layer_num_}.post_attention_layernorm.weight"])
     
         inter_size = self.network_config_['intermediate_size']
-        split_inter_size = inter_size // self.world_size_
+        split_inter_size = inter_size // self.tp_size_
 
         if f"model.layers.{self.layer_num_}.mlp.up_proj.weight" in weights:
             self.up_proj = weights[f"model.layers.{self.layer_num_}.mlp.up_proj.weight"][split_inter_size *

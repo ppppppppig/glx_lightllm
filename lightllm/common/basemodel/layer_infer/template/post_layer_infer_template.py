@@ -18,3 +18,19 @@ class PostLayerInferTpl(PostLayerInfer):
 
     def _slice_get_last_input(self, input, infer_state)->Tuple[torch.Tensor, int]:
         raise Exception("need to impl")
+    
+    
+class PostLayerInferTpAndPpl(PostLayerInfer):
+    def __init__(self, tp_rank, world_size, network_config, mode, pp_rank, pp_size, tp_size, post_rank):
+        super().__init__(tp_rank, world_size, network_config, mode, pp_rank, pp_size, tp_size, post_rank)
+        self.eps_ = 1e-5
+        self.vocab_size_ = network_config["vocab_size"]
+        self.embed_dim_ = network_config["n_embed"]
+        return
+    
+    def _norm(self, input, infer_state, layer_weight)->torch.Tensor:
+        raise Exception("need to impl")
+    
+
+    def _slice_get_last_input(self, input, infer_state)->Tuple[torch.Tensor, int]:
+        raise Exception("need to impl")
