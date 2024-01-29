@@ -118,7 +118,6 @@ def splitfuse_prepare_decode_inputs(batch:InferBatch, splitfuse_block_size):
             prefill_reqs.append(req)
         else:
             assert False, "error state"
-
     input_ids = []
     decode_req_num = len(decode_reqs)
     decode_total_token_num = 0

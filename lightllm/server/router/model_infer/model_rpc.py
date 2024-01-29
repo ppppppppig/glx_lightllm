@@ -266,9 +266,9 @@ class ModelRpcServer(rpyc.Service):
                 decode_reqs.append(req)
             elif req.cur_kv_len < len(req.input_token_ids) - 1:
                 prefill_reqs.append(req)
+        decode_req_num = len(decode_reqs)
         all_reqs = decode_reqs
         all_reqs.extend(prefill_reqs)
-        decode_req_num = len(decode_reqs)
         index = 0
         for req_obj, next_token_id in zip(all_reqs, next_token_ids):
             if index < decode_req_num:

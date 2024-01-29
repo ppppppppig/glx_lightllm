@@ -69,7 +69,6 @@ class RouterManager:
             ans_left = tp_rank * self.pp_size + pp_rank - 1
         if pp_rank != self.pp_size - 1:
             ans_right = tp_rank * self.pp_size + pp_rank + 1
-        print(f"pre_rank: {ans_left}, post_rank: {ans_right}")
         return [ans_left, ans_right]
         
     def compute_all_reduce_rank(self, tp_rank, pp_rank):
@@ -539,14 +538,11 @@ def start_router_process(args, router_port, detokenization_port, model_rpc_ports
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    # if (args.pp == 1):
-    for rank_id in range(args.pp):
-        loop.create_task(router.loop_for_fwd_add_pp(rank_id))
-    # loop.create_task(router.loop_for_fwd())
-    # else:
-    #     for pp_rank in range(args.pp):
-    #         loop.create_task(router.loop_for_pp_rank_fwd(pp_rank))
-    #     loop.create_task(router.loop_for_pp_add_new_batch())
+    if (args.pp == 1):
+        loop.create_task(router.loop_for_fwd())
+    else:
+        for pp_rank in range(args.pp):
+            loop.create_task(router.loop_for_fwd_add_pp(pp_rank))
         
     loop.run_until_complete(router.loop_for_netio_req())
     return
