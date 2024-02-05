@@ -59,7 +59,6 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
 
         input_embeddings = torch.empty(shape.tolist(), dtype=torch.float16, device=torch.cuda.current_device())
         torch.distributed.broadcast(input_embeddings, src=src_rank, group=pair_group)
-
         return input_embeddings
     
 

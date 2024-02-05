@@ -38,6 +38,8 @@ from .infer_batch import InferReq
 from lightllm.server.io_struct import ReqRunStatus
 from lightllm.utils.log_utils import init_logger
 from .infer_batch import pair_groups, all_reduce_groups
+import time
+import sys
 
 
 class ModelRpcServer(rpyc.Service):
@@ -259,6 +261,8 @@ class ModelRpcServer(rpyc.Service):
     
     # 更新前面所有组的统计信息
     def exposed_add_tokens(self, req_ids, next_token_ids):
+        # print(f"pp_rank: {self.pp_rank}, add_tokens")
+        # print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
         decode_reqs, prefill_reqs = [], []
         for request_id in req_ids:
             req : InferReq = requests_mapping[request_id]
@@ -381,17 +385,27 @@ class ModelRpcServer(rpyc.Service):
 
     # @calculate_time(show=True, min_cost_ms=200)
     def splitfuse_forward(self, batch_id):
+        start_time = time.perf_counter()
         output_dict = {}
+        # print(f"pp_rank: {self.pp_rank}, batch_id:{batch_id}")
         batch: InferBatch = self.cache.pop(batch_id)
         kwargs, decode_reqs, prefill_reqs = splitfuse_prepare_decode_inputs(batch, self.splitfuse_block_size)
         decode_req_num = len(decode_reqs)
         all_reqs = decode_reqs
         all_reqs.extend(prefill_reqs)
         logits = self.model.splitfuse_forward(**kwargs)
-        if self.pp_size != 1 and self.pp_rank != self.pp_size - 1:
+        end_time = time.perf_counter()
+        # print(f"pp_rank: {self.pp_rank}, batch_id:{batch_id} done")
+        if self.pp_size != 1 and self.pp_rank == 0:
+            # print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
             self.cache[batch.batch_id] = batch
+            print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}")
             return output_dict
-        next_token_ids, next_token_probs = sample(logits, all_reqs)
+        if self.pp_size != 1 and self.pp_rank != self.pp_size - 1:
+            next_token_ids, next_token_probs = torch.full((len(all_reqs),), 13), torch.full((len(all_reqs),), 0.1516)
+        else: 
+            next_token_ids, next_token_probs = sample(logits, all_reqs)
+            
         next_token_ids = next_token_ids.detach().cpu().numpy()
         next_token_logprobs = torch.log(next_token_probs).detach().cpu().numpy()
         
@@ -426,9 +440,12 @@ class ModelRpcServer(rpyc.Service):
                 else:
                     assert False, "error state"
             index += 1    
-
+        print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
         self.cache[batch.batch_id] = batch
+        print(f"rank: {self.pp_rank} spend time :{ end_time - start_time}")
         return output_dict
+
+
 
 class ModelRpcClient:
     def __init__(self, model_rpc, world_size, rpc_server_process=None):
@@ -464,6 +481,8 @@ class ModelRpcClient:
             self._merge_batch = self.model.exposed_merge_batch
             self._remove_batch = self.model.exposed_remove_batch
             self._add_tokens = self.model.exposed_add_tokens
+        self.decode_req_que = None
+        self.decode_resp_que = None
         return
 
     async def init_model(self, kvargs):
@@ -488,12 +507,33 @@ class ModelRpcClient:
         else:
             return ans
 
-    async def decode_batch(self, batch_id):
-        ans = self._decode_batch(batch_id)
-        if self.use_rpc:
-            return await ans
-        else:
-            return ans
+    async def decode_batch(self, batch_id, rank_id=-1, flag = False):
+        await self.decode_req_que.put((batch_id, rank_id, flag))
+    
+    def init_que(self):
+        self.decode_req_que = asyncio.Queue()
+        self.decode_resp_que = asyncio.Queue()
+
+    async def decode_batch_loop(self):
+        if self.decode_req_que is None or self.decode_resp_que is None:
+            self.init_que()
+        while True:
+            print("start decode_batch_loop")
+            batch_id, rank_id, flag = await self.decode_req_que.get()
+            start_time = time.perf_counter()
+            print(f"start decode batch, rank _id : {rank_id}")
+            ans = self._decode_batch(batch_id)
+            true_ans = await ans
+            end_time = time.perf_counter()
+            print(f"decode batch: {rank_id}, spend time: {end_time - start_time}")
+            if flag:
+                start_time = time.perf_counter()
+                dd = obtain(true_ans)
+                print(dd)
+                end_time = time.perf_counter()
+                print(f"decode batch: {rank_id}, obtain spend time: {end_time - start_time}, flag: {flag}")
+                await self.decode_resp_que.put(dd)
+
 
     async def filter_batch(self, batch_id, req_id_list, finished_req_id_list):
         ans = self._filter_batch(batch_id, req_id_list, finished_req_id_list)

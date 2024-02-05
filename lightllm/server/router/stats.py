@@ -28,13 +28,14 @@ class Stats:
             self.all_tokens += tokens
         return
 
-    def print_stats(self):
+    def print_stats(self, rank_id = -1):
         if not self.log_stats:
             return
 
         now = time.time()
         if now - self.last_log_time > self.log_stats_interval:
-            logger.debug(f"Avg tokens(prompt+generate) throughput: {self.all_tokens/(now-self.last_log_time):8.3f} tokens/s\n"
+            logger.debug(f"rank id: {rank_id}\n"
+                         f"Avg tokens(prompt+generate) throughput: {self.all_tokens/(now-self.last_log_time):8.3f} tokens/s\n"
                          f"Avg prompt tokens throughput:           {self.prompt_tokens/(now-self.last_log_time):8.3f} tokens/s\n"
                          f"Avg generate tokens throughput:         {self.output_tokens/(now-self.last_log_time):8.3f} tokens/s")
             self.all_tokens = 0

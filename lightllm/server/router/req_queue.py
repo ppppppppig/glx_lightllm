@@ -10,10 +10,10 @@ from lightllm.server.io_struct import ReqRunStatus, FinishStatus
 class ReqQueue:
 
     def __init__(self, args, prompt_cache_used_tokens, prompt_cache_req_num) -> None:
-        self.max_total_tokens = args.max_total_token_num
+        self.max_total_tokens = args.max_total_token_num // args.pp
         assert args.batch_max_tokens is not None
-        self.batch_max_tokens = args.batch_max_tokens
-        self.running_max_req_size = args.running_max_req_size
+        self.batch_max_tokens = args.batch_max_tokens // args.pp
+        self.running_max_req_size = args.running_max_req_size // args.pp
         self.waiting_req_list: List[Req] = []
         self.router_token_ratio = args.router_token_ratio
         self.router_max_new_token_len = args.router_max_new_token_len
@@ -73,7 +73,6 @@ class ReqQueue:
     
     #@calculate_time(show=True, min_cost_ms=10)
     def generate_new_batch(self, current_batch:Batch):
-
         # 如果当前已经被调度的请求数量超过了上限，直接不调度新的请求了。
         exist_req_num = self.prompt_cache_req_num
         exist_req_num += 0 if current_batch is None else len(current_batch.reqs)
@@ -118,6 +117,7 @@ class ReqQueue:
                 break
 
         if len(can_run_list) != 0:
+            print(f"wait queue len: {len(self.waiting_req_list)}")
             new_batch = Batch(uuid.uuid4().hex, can_run_list)
             self.waiting_req_list = self.waiting_req_list[len(can_run_list) + aborted_count:]
             # 生成新 batch 以后，更新一下状态

@@ -10,6 +10,7 @@ asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 from ..tokenizer import get_tokenizer
 from ..io_struct import BatchStrOut, AbortReq, FinishStatus
 from ..embed_cache.utils import get_shm_name_data, create_shm
+# import debugpy; debugpy.connect(('0.0.0.0', 5678))
 
 class HttpServerManager:
     def __init__(
@@ -153,7 +154,8 @@ class HttpServerManager:
             self.send_to_visual.send_pyobj((prompt_ids, sampling_params, multimodal_params, request_id, prompt_cache_len, prompt_cache_req_id))
         else:
             self.send_to_router.send_pyobj((prompt_ids, sampling_params, multimodal_params, request_id, prompt_cache_len, prompt_cache_req_id))
-
+        # print("send req")
+        # print(prompt_ids)
         while True:
             try:
                 await asyncio.wait_for(event.wait(), timeout=5)

@@ -104,12 +104,14 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
         length = torch.tensor(len(input_embdings.shape), dtype=torch.int).cuda(torch.cuda.current_device())
         req1 = torch.distributed.broadcast(length, src=src_rank, group=pair_group, async_op=True)
         self.length_list_.append((length, req1))
-        
+        # print("send length")
         shape = torch.tensor(input_embdings.shape, dtype=torch.int).cuda(torch.cuda.current_device())
         req2 = torch.distributed.broadcast(shape, src=src_rank, group=pair_group, async_op=True)
+        # print("send shape")
         self.shape_list_.append((shape, req2))
         
         req3 = torch.distributed.broadcast(input_embdings, src=src_rank, group=pair_group, async_op=True)
+        # print("send input_embdings")
         self.input_embeddings_list_.append((input_embdings, req3))
         return input_embdings
         
