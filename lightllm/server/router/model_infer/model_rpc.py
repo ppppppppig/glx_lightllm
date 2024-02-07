@@ -236,8 +236,8 @@ class ModelRpcServer(rpyc.Service):
 
     # @calculate_time(show=True, min_cost_ms=0.1)
     def exposed_filter_batch(self, batch_id, req_id_list, finished_req_id_list):
-        if self.world_size != 1:
-            batch_id, req_id_list, finished_req_id_list = obtain(batch_id), obtain(req_id_list), obtain(finished_req_id_list)
+        # if self.world_size != 1:
+        batch_id, req_id_list, finished_req_id_list = obtain(batch_id), json.loads(req_id_list), json.loads(finished_req_id_list)
         # print("filter old size:", len(batch.reqs), "new size:", len(req_id_list))
         batch = self.cache.pop(batch_id)
         filter_batch = batch.filter(req_id_list, finished_req_id_list)
@@ -529,7 +529,7 @@ class ModelRpcClient:
             return ans
 
     async def pp_decode_batch(self, batch_id, req_ids = None, next_token_ids = None, rank_id = -1, flag = False):
-        # print(f"add_req_que: {rank_id}")
+        print(f"add_req_que: {rank_id}")
         await self.decode_req_que.put((batch_id, req_ids, next_token_ids, rank_id, flag))
     
     async def decode_batch(self, batch_id):
@@ -546,7 +546,7 @@ class ModelRpcClient:
         if self.decode_req_que is None or self.decode_resp_que is None:
             self.init_que()
         while True:
-            # print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
+            print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
             batch_id, req_ids, next_token_ids, rank_id, flag = await self.decode_req_que.get()
             start_time = time.perf_counter()
             print(f"start decode batch, rank _id : {rank_id}")
@@ -572,7 +572,7 @@ class ModelRpcClient:
 
 
     async def filter_batch(self, batch_id, req_id_list, finished_req_id_list):
-        ans = self._filter_batch(batch_id, req_id_list, finished_req_id_list)
+        ans = self._filter_batch(batch_id, json.dumps(req_id_list), json.dumps(finished_req_id_list))
         if self.use_rpc:
             await ans
             return

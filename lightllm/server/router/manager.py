@@ -35,13 +35,14 @@ class RouterManager:
         self.max_total_token_num = args.max_total_token_num
         
         self.pause_strategy = Fcfs()
-        self.running_batch_list: Batch = [None] * self.pp_size
-        self.wait_to_return = [None] * self.pp_size
-        self.decode_carry_message = [(None, None)] * self.pp_size
+        self.batch_num = self.pp_size
+        self.running_batch_list: Batch = [None] * self.batch_num
+        self.wait_to_return = [None] * self.batch_num
+        self.decode_carry_message = [(None, None)] * self.batch_num
         self.running_batch: Batch = None
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
-        self.has_wait_tokens_list = [0] * self.pp_size
+        self.has_wait_tokens_list = [0] * self.batch_num
         self.max_wait_tokens = 10
         self.counter_count = 0
         self.all_times_add_tokens = 0
@@ -67,7 +68,7 @@ class RouterManager:
             self.tokenizer = get_tokenizer(self.model_weightdir, args.tokenizer_mode, args.trust_remote_code)
 
         self.stats_tool = Stats(not args.disable_log_stats, args.log_stats_interval)
-        self.stats_tool_list = [Stats(not args.disable_log_stats, args.log_stats_interval) for _ in range(self.pp_size)]
+        self.stats_tool_list = [Stats(not args.disable_log_stats, args.log_stats_interval) for _ in range(self.batch_num)]
         return
 
     def compute_pre_and_post_rank(self, tp_rank, pp_rank):
@@ -217,7 +218,7 @@ class RouterManager:
     async def loop_for_fwd_add_pp(self):
         
         while True:
-            for rank_id in range(self.pp_size):
+            for rank_id in range(self.batch_num):
                 ans = True
                 while ans:
                     ans = await self._pp_step(rank_id)
