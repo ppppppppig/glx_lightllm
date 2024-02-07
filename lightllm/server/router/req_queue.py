@@ -10,10 +10,10 @@ from lightllm.server.io_struct import ReqRunStatus, FinishStatus
 class ReqQueue:
 
     def __init__(self, args, prompt_cache_used_tokens, prompt_cache_req_num) -> None:
-        self.max_total_tokens = args.max_total_token_num // args.pp
+        self.max_total_tokens = args.max_total_token_num // args.pp // 2
         assert args.batch_max_tokens is not None
-        self.batch_max_tokens = args.batch_max_tokens // args.pp
-        self.running_max_req_size = args.running_max_req_size // args.pp
+        self.batch_max_tokens = args.batch_max_tokens // args.pp // 2
+        self.running_max_req_size = args.running_max_req_size // args.pp // 2
         self.waiting_req_list: List[Req] = []
         self.router_token_ratio = args.router_token_ratio
         self.router_max_new_token_len = args.router_max_new_token_len

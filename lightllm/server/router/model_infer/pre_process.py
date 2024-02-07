@@ -111,6 +111,7 @@ def prepare_decode_inputs(batch:InferBatch):
 def splitfuse_prepare_decode_inputs(batch:InferBatch, splitfuse_block_size):    
     decode_reqs, prefill_reqs = [], []
     for request_id in batch.request_ids:
+        # print(f"request_id : {request_id}")
         req : InferReq = requests_mapping[request_id]
         if req.cur_kv_len == len(req.input_token_ids) - 1:
             decode_reqs.append(req)
@@ -154,8 +155,13 @@ def splitfuse_prepare_decode_inputs(batch:InferBatch, splitfuse_block_size):
         prefill_max_split_seq_len_in_batch = max(prefill_max_split_seq_len_in_batch, split_len)
         seq_len = req.cur_kv_len + split_len
         prefill_b_seq_len.append(seq_len)
+        # print(f"seq_len: {seq_len}, split_len: {split_len}")
         input_ids.extend(req.input_token_ids[seq_len - split_len : seq_len])
-    
+    #     print(req.input_token_ids[seq_len - split_len : seq_len])
+    # print(f"len prefill_reqs: {len(prefill_reqs)}")
+    # print(f"len decode reqs: {decode_req_num}")
+    # print(f"input_ids: {input_ids}")
+    # print(f"{torch.tensor(input_ids, dtype=torch.int64, device='cuda')}")
     kwargs = {
             "input_ids": torch.tensor(input_ids, dtype=torch.int64, device='cuda'),
             "decode_req_num": decode_req_num,

@@ -37,12 +37,15 @@ class RouterManager:
         self.pause_strategy = Fcfs()
         self.running_batch_list: Batch = [None] * self.pp_size
         self.wait_to_return = [None] * self.pp_size
+        self.decode_carry_message = [(None, None)] * self.pp_size
         self.running_batch: Batch = None
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
         self.has_wait_tokens_list = [0] * self.pp_size
         self.max_wait_tokens = 10
         self.counter_count = 0
+        self.all_times_add_tokens = 0
+        self.all_times_handle_finish = 0
         
         self.pp_deque_list = []
         for idx in range(args.pp + 1):
@@ -177,7 +180,6 @@ class RouterManager:
         else:
             req = NormalReq(request_id, prompt_ids, sampling_params, multimodal_params, 
                             prompt_cache_len, prompt_cache_req_id)
-        print("fuck add req")
         self.req_queue.append(req)
         self.send_to_detokenization.send_pyobj(req.to_req_detokenization_state())
         return
@@ -218,7 +220,6 @@ class RouterManager:
             for rank_id in range(self.pp_size):
                 ans = True
                 while ans:
-                    print("loop_for_fwd_add_pp fuck you")
                     ans = await self._pp_step(rank_id)
                     self.counter_count += 1 
                     running_batch = self.running_batch_list[rank_id]
@@ -242,26 +243,24 @@ class RouterManager:
         """
         事件处理循环
         """
-        
         if self.wait_to_return[rank_id] is not None:
-            print("fuck await")
             await asyncio.gather(*self.wait_to_return[rank_id])
             # print(f"rank_id: {rank_id} end")
             self.wait_to_return[rank_id] = None
             # print(f"rank_id: {rank_id} has done")
             if self.world_size != 1:
                 last_rank_id = self.tp_size * self.pp_size - 1
-                print("what fuck")
                 req_to_out_status = await self.model_rpcs[last_rank_id].decode_resp_que.get()
+                self.decode_carry_message[rank_id] = (list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()])
                 # print("get result")
                 
                 # 使用这个结果更新下前面的结果
                 # print(f"req_to_out_statue: {req_to_out_status}")
-                temp_rets = []
-                for pp_rank in range(1):
-                    for tp_rank in range(self.tp_size):
-                        new_rank = tp_rank * self.pp_size + pp_rank
-                        temp_rets.append(self.model_rpcs[new_rank].add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
+                # temp_rets = []
+                # for pp_rank in range(1):
+                #     for tp_rank in range(self.tp_size):
+                #         new_rank = tp_rank * self.pp_size + pp_rank
+                #         temp_rets.append(self.model_rpcs[new_rank].add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
                          
             else:
                 req_to_out_status = self.model_rpcs[0].decode_resp_que.get()
@@ -269,16 +268,20 @@ class RouterManager:
             unfinished_req_ids, finished_req_ids = self.running_batch_list[rank_id].mark_and_get_finished_req_and_preupdate_status(self.eos_id)
             self._send_to_detokenization_proc(self.running_batch_list[rank_id], req_to_out_status)
             self.running_batch_list[rank_id].filter_out_finished_req(unfinished_req_ids, finished_req_ids)
-            await asyncio.gather(*temp_rets)  
+            # start_time = time.perf_counter()
+            # await asyncio.gather(*temp_rets) 
+            endd_time = time.perf_counter() 
             # print("add token done")
             await self._handle_finish_req(self.running_batch_list[rank_id], unfinished_req_ids, finished_req_ids)
+            end_time = time.perf_counter()
+            self.all_times_handle_finish += end_time - endd_time
+            print(f"all_times_handle_finish:{self.all_times_handle_finish}")
             # print("handle finish req")
             self._pp_filter_runing_batch(rank_id)
             # 一些更进一步的处理
         
         # 删除所有已经 finished 的 req
         # 当前无运行请求时
-        print("aini")
         if self.running_batch_list[rank_id] is None:
             new_batch = self.req_queue.generate_new_batch(self.running_batch_list[rank_id])
             if new_batch is not None:
@@ -292,7 +295,6 @@ class RouterManager:
             return False # 是否还需要再调用一次
 
         
-        print("pp_step")
         # 有运行请求，但是已经到了可以调度新的请求合并推理的时机
         if self.has_wait_tokens_list[rank_id] >= self.max_wait_tokens:
             new_mini_batch = self.req_queue.generate_new_batch(self.running_batch_list[rank_id])
@@ -416,7 +418,7 @@ class RouterManager:
 
     async def _decode_batch(self, batch:Batch, rank_id = -1):
         if self.pp_size == 1:
-            rets = [self.model_rpcs[tp_rank].decode_batch(batch.batch_id, rank_id) for tp_rank in range(self.world_size)]
+            rets = [self.model_rpcs[tp_rank].decode_batch(batch.batch_id) for tp_rank in range(self.world_size)]
             ans = await asyncio.gather(*rets)
             if self.world_size != 1:
                 req_to_out_status = obtain(ans[0])
@@ -436,9 +438,13 @@ class RouterManager:
                 for tp_rank in range(self.tp_size):
                     new_rank = tp_rank * self.pp_size + pp_rank
                     if tp_rank == self.tp_size - 1 and pp_rank == self.pp_size - 1:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].decode_batch(batch.batch_id, rank_id, True)))
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, None, None, rank_id, True)))
+                    elif pp_rank == 0:
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, self.decode_carry_message[rank_id][0], self.decode_carry_message[rank_id][1], rank_id, False)))
                     else:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].decode_batch(batch.batch_id, rank_id, False)))
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, None, None, rank_id, False)))
+                        
+            self.decode_carry_message[rank_id] = (None, None)
             return
                     
 
@@ -467,6 +473,18 @@ class RouterManager:
 
     async def _handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids):
         if len(finished_req_ids) != 0:
+            #print("fuck finished req")
+            if batch.is_clear():
+                # print(f"remove_batch")
+                await self._remove_batch(batch)
+            else:
+                # print(f"finished_req_ids: {finished_req_ids}")
+                await self._filter_batch(batch, unfinished_req_ids, finished_req_ids)
+        return
+    
+    async def _pp_handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids):
+        if len(finished_req_ids) != 0:
+            print("fuck finished req")
             if batch.is_clear():
                 await self._remove_batch(batch)
             else:
@@ -474,7 +492,6 @@ class RouterManager:
         return
 
     def start_decode_loop(self, loop):
-        print(f"client loop id: {id(loop)}")
         for client in self.model_rpcs:
             loop.create_task(client.decode_batch_loop())
 
@@ -538,7 +555,6 @@ class RouterManager:
 
     async def loop_for_netio_req(self):
         while True:
-            print("recv loop for netio req")
             recv_req = await self.recv_from_httpserver.recv_pyobj()
             if isinstance(recv_req, tuple) and len(recv_req) == 6:
                 prompt_ids, sampling_params, multimodal_params, request_id, prompt_cache_len, prompt_cache_req_id = recv_req
@@ -579,7 +595,6 @@ def start_router_process(args, router_port, detokenization_port, model_rpc_ports
     pipe_writer.send('init ok')
     
     loop = asyncio.new_event_loop()
-    print(f"main loop id: {id(loop)}")
     asyncio.set_event_loop(loop)
     if (args.pp == 1):
         loop.create_task(router.loop_for_fwd())
