@@ -25,8 +25,7 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
         self.vocab_size_ = network_config["vocab_size"]
         self.embed_dim_ = network_config["n_embed"]
         self.gpu_rank_ = tp_rank * pp_size + pp_rank
-        self.length_list_ = []   # 广播未完成前，tensor不能删除，否则会引发未定义的行为
-        self.shape_list_ = []
+        self.shape_list_ = []# 广播未完成前，tensor不能删除，否则会引发未定义的行为
         self.input_embeddings_list_ = []
         return
     
@@ -92,7 +91,6 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
     
     
     def filter_out_complete_broadcast(self):
-        self.length_list_ = [(length, req) for length, req in self.length_list_ if not req.is_completed()]
         self.shape_list_ = [(shape, req) for shape, req in self.shape_list_ if not req.is_completed()]
         self.input_embeddings_list_ = [(input_embeddings, req) for input_embeddings, req in self.input_embeddings_list_ if not req.is_completed()]
     
@@ -101,16 +99,14 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
         src_rank = self.tp_rank_ * self.pp_size_ + self.pp_rank_
         dst_rank = self.post_rank_
         pair_group = get_pair_groups(src_rank, dst_rank)
-        length = torch.tensor(len(input_embdings.shape), dtype=torch.int).cuda(torch.cuda.current_device())
-        req1 = torch.distributed.broadcast(length, src=src_rank, group=pair_group, async_op=True)
-        self.length_list_.append((length, req1))
-        # print("send length")
-        shape = torch.tensor(input_embdings.shape, dtype=torch.int).cuda(torch.cuda.current_device())
-        req2 = torch.distributed.broadcast(shape, src=src_rank, group=pair_group, async_op=True)
-        # print("send shape")
-        self.shape_list_.append((shape, req2))
+        # shape = torch.tensor(input_embdings.shape, dtype=torch.int).cuda(torch.cuda.current_device())
+        # req2 = torch.distributed.broadcast(shape, src=src_rank, group=pair_group, async_op=True)
+        # req2 = torch.distributed.isend(shape, dst = dst_rank)
+        # # print("send shape")
+        # self.shape_list_.append((shape, req2))
         
-        req3 = torch.distributed.broadcast(input_embdings, src=src_rank, group=pair_group, async_op=True)
+        # req3 = torch.distributed.broadcast(input_embdings, src=src_rank, group=pair_group, async_op=True)
+        req3 = torch.distributed.isend(input_embdings, dst = dst_rank)
         # print("send input_embdings")
         self.input_embeddings_list_.append((input_embdings, req3))
         return input_embdings

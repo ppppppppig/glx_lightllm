@@ -40,6 +40,7 @@ from lightllm.utils.log_utils import init_logger
 from .infer_batch import pair_groups, all_reduce_groups
 import time
 import sys
+import json
 
 
 class ModelRpcServer(rpyc.Service):
@@ -217,10 +218,18 @@ class ModelRpcServer(rpyc.Service):
 
     @calculate_time(show=True, min_cost_ms=200)
     def exposed_decode_batch(self, batch_id, req_ids = None, next_token_ids = None):
-        batch_id, req_ids, next_token_ids = obtain(batch_id), obtain(req_ids), obtain(next_token_ids)
+        start_time = time.perf_counter()
+        print(f"batch_id type : {type(batch_id)}, req_ids type: {type(req_ids)}")
+        print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
+        if req_ids is not None and next_token_ids is not None:
+            req_ids = json.loads(req_ids)
+            next_token_ids = json.loads(next_token_ids)
         if self.is_splitfuse_mode:
             if req_ids is not None and next_token_ids is not None:
                 self.exposed_add_tokens(req_ids, next_token_ids)
+                end_time = time.perf_counter()
+                self.add_token_all_times += end_time - start_time
+                print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
             return self.splitfuse_forward(batch_id)
         else:
             return self.forward(batch_id, is_prefill=False)
@@ -269,7 +278,6 @@ class ModelRpcServer(rpyc.Service):
         # print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
         # print(f"pp_rank: {self.pp_rank}, add_tokens")
         # print(f"req_ids: {len(req_ids)}, next_token_ids: {len(next_token_ids)}")
-        start_time = time.perf_counter()
         decode_reqs, prefill_reqs = [], []
         temp_next_token_ids = []
         for idx, request_id in enumerate(req_ids):
@@ -302,9 +310,6 @@ class ModelRpcServer(rpyc.Service):
                 else:
                     assert False, "error state"
             index += 1
-        end_time = time.perf_counter()
-        self.add_token_all_times += end_time - start_time
-        # print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
         return
 
     
@@ -411,9 +416,9 @@ class ModelRpcServer(rpyc.Service):
         end_time = time.perf_counter()
         # print(f"pp_rank: {self.pp_rank}, batch_id:{batch_id} done")
         if self.pp_size != 1 and self.pp_rank == 0:
-            # print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
+            print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
             self.cache[batch.batch_id] = batch
-            # print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}")
+            print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}")
             return output_dict
         if self.pp_size != 1 and self.pp_rank != self.pp_size - 1:
             next_token_ids, next_token_probs = torch.full((len(all_reqs),), 13), torch.full((len(all_reqs),), 0.1516)
@@ -454,9 +459,9 @@ class ModelRpcServer(rpyc.Service):
                 else:
                     assert False, "error state"
             index += 1    
-        #print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
+        print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
         self.cache[batch.batch_id] = batch
-        #print(f"rank: {self.pp_rank} spend time :{ end_time - start_time}")
+        print(f"rank: {self.pp_rank} spend time :{ end_time - start_time}")
         return output_dict
 
 
@@ -545,14 +550,14 @@ class ModelRpcClient:
             batch_id, req_ids, next_token_ids, rank_id, flag = await self.decode_req_que.get()
             start_time = time.perf_counter()
             print(f"start decode batch, rank _id : {rank_id}")
-            ans = self._decode_batch(batch_id, req_ids, next_token_ids)
+            ans = self._decode_batch(batch_id, json.dumps(req_ids), json.dumps(next_token_ids))
             true_ans = await ans
             end_time = time.perf_counter()
             self.decode_all_time += end_time - start_time
             print(f"decode batch: {rank_id}, spend time: {end_time - start_time}")
             if flag:
                 start_time = time.perf_counter()
-                print(type(true_ans))
+                # print(type(true_ans))
                 # if is_ref(true_ans):
                 #     print("is netref")
                 dd = obtain(true_ans)
@@ -560,7 +565,7 @@ class ModelRpcClient:
                 end_time = time.perf_counter()
                 self.obtain_all_time += end_time - start_time
                 self.decode_all_time += end_time - start_time
-                #print(f"decode batch: {rank_id}, obtain spend time: {end_time - start_time}, flag: {flag}, obtain_all_time: {self.obtain_all_time}, decode_all_time: {self.decode_all_time}")
+                print(f"decode batch: {rank_id}, obtain spend time: {end_time - start_time}, flag: {flag}, obtain_all_time: {self.obtain_all_time}, decode_all_time: {self.decode_all_time}")
                 await self.decode_resp_que.put(dd)
             else:
                 print(f"decode_all_time: {self.decode_all_time}")
