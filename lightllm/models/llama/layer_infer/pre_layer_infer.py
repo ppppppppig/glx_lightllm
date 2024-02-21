@@ -7,9 +7,8 @@ from lightllm.models.llama.infer_struct import LlamaInferStateInfo
 from lightllm.common.basemodel import PreLayerInferTpAndPpl
 from lightllm.utils.infer_utils import mark_cost_time
 from lightllm.server.router.model_infer.infer_batch import get_pair_groups, get_all_reduce_groups
-import zmq
-import pickle
-import time
+
+
 class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
     """
     """
@@ -22,16 +21,6 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
         self.vob_start_id_ = tp_vocab_size_ * self.tp_rank_
         self.vob_end_id_ = tp_vocab_size_ * (self.tp_rank_ + 1)
         self.gpu_rank_ = tp_rank * pp_size + pp_rank
-        context = zmq.Context(1)
-        self.recv_to_last = context.socket(zmq.PULL)
-        if pp_rank == 1:
-            if tp_rank == 0:
-                self.recv_to_last.bind(f"ipc:///tmp/my_ipc_socket")
-            else :
-                self.recv_to_last.bind(f"ipc:///tmp/my_ipc_socket2")
-        self.pickle_all_time = 0
-        self.load_to_gpu_all_time = 0
-        self.recv_all_time = 0
         return
 
     @mark_cost_time("pre context forward")
@@ -62,26 +51,14 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
         pair_group = get_pair_groups(src_rank, dst_rank)
         assert pair_group is not None, "wrong: pair group is None"
 
-        # length = torch.empty(1, dtype=torch.int).cuda(torch.cuda.current_device())
-        # torch.distributed.broadcast(length, src=src_rank, group=pair_group)
+        length = torch.empty(1, dtype=torch.int).cuda(torch.cuda.current_device())
+        torch.distributed.broadcast(length, src=src_rank, group=pair_group)
 
-        # shape = torch.empty(length.tolist(), dtype=torch.int).cuda(torch.cuda.current_device())
-        # torch.distributed.broadcast(shape, src=src_rank, group=pair_group)
+        shape = torch.empty(length.tolist(), dtype=torch.int).cuda(torch.cuda.current_device())
+        torch.distributed.broadcast(shape, src=src_rank, group=pair_group)
 
-        # input_embeddings = torch.empty(shape.tolist(), dtype=torch.float16, device=torch.cuda.current_device())
-        # torch.distributed.broadcast(input_embeddings, src=src_rank, group=pair_group)
-        start_time = time.perf_counter()
-        serialized_tensor = self.recv_to_last.recv()
-        sstart_time = time.perf_counter()
-        data = pickle.loads(serialized_tensor)
-        ssstart_time = time.perf_counter()
-        input_embeddings = data.to(torch.cuda.current_device())
-        print(input_embeddings[0][0])
-        end_time = time.perf_counter()
-        self.pickle_all_time += ssstart_time - sstart_time
-        self.load_to_gpu_all_time += end_time - ssstart_time
-        self.recv_all_time += sstart_time - start_time
-        print(f"recv embeddings time : {end_time - start_time}, picke all time {self.pickle_all_time}, load gpu all time: {self.load_to_gpu_all_time}, get data all time: {self.recv_all_time}")
+        input_embeddings = torch.empty(shape.tolist(), dtype=torch.float16, device=torch.cuda.current_device())
+        torch.distributed.broadcast(input_embeddings, src=src_rank, group=pair_group)
         return input_embeddings
     
 

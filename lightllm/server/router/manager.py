@@ -43,7 +43,7 @@ class RouterManager:
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
         self.has_wait_tokens_list = [0] * self.batch_num
-        self.max_wait_tokens = 10
+        self.max_wait_tokens = 5
         self.counter_count = 0
         self.all_times_add_tokens = 0
         self.all_times_handle_finish = 0
@@ -373,13 +373,20 @@ class RouterManager:
 
     async def _init_batch(self, batch: Batch):
         reqs = [r.to_rpc_obj() for r in batch.reqs]
-        rets = [self.model_rpcs[tp_rank].init_batch(batch.batch_id, reqs) for tp_rank in range(self.world_size)]
-        ans = await asyncio.gather(*rets)
-        if self.world_size != 1:
-            req_to_req_status = obtain(ans[0])
+        if self.pp_size != 1:
+            rets = [self.model_rpcs[tp_rank].pp_init_batch(batch, reqs, tp_rank) for tp_rank in range(self.world_size)]
+            await asyncio.gather(*rets)
+            req_to_req_status = await self.model_rpcs[0].init_resp_que.get()
+            
         else:
-            req_to_req_status = ans[0]
-        
+            print("ffffffffffffff")
+            rets = [self.model_rpcs[tp_rank].init_batch(batch.batch_id, reqs) for tp_rank in range(self.world_size)]
+            ans = await asyncio.gather(*rets)
+            if self.world_size != 1:
+                req_to_req_status = ans[0]
+            else:
+                req_to_req_status = ans[0]
+            
         self._update_init_status_to_batch(batch, req_to_req_status)
         return
 
@@ -451,24 +458,37 @@ class RouterManager:
 
     async def _filter_batch(self, batch: Batch, unfinished_req_ids, finished_req_ids: List):
         # print("filter_batch")
-        rets = [self.model_rpcs[tp_rank].filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
+        if self.pp_size != 1:
+            rets = [self.model_rpcs[tp_rank].pp_filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
+        else:
+            rets = [self.model_rpcs[tp_rank].filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
         await asyncio.gather(*rets)
         return
 
     async def _merge_batch(self, batch1, batch2):
-        rets = [self.model_rpcs[tp_rank].merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
+        if self.pp_size != 1:
+            rets = [self.model_rpcs[tp_rank].pp_merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
+        else:
+            rets = [self.model_rpcs[tp_rank].merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
         await asyncio.gather(*rets)
         return
 
     async def _remove_batch(self, batch):
         # print("remove_batch")
-        rets = [self.model_rpcs[tp_rank].remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
+        print(f"remove batch {batch.batch_id}")
+        if self.pp_size != 1:
+            rets = [self.model_rpcs[tp_rank].pp_remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
+        else:
+            rets = [self.model_rpcs[tp_rank].remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
         await asyncio.gather(*rets)
         return
     
     async def _pause_reqs(self, batch: Batch, pasue_reqs):
         pasue_reqs_info = [(r.request_id, r.req_status) for r in pasue_reqs]
-        rets = [self.model_rpcs[tp_rank].pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
+        if self.pp_size != 1:
+            rets = [self.model_rpcs[tp_rank].pp_pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
+        else:
+            rets = [self.model_rpcs[tp_rank].pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
         await asyncio.gather(*rets)
         return
 
