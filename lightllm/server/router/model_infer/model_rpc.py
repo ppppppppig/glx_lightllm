@@ -190,19 +190,19 @@ class ModelRpcServer(rpyc.Service):
             import traceback
             traceback.print_exc()
             raise e
-        self.all_add_batch_time = 0
-        self.all_filter_batch_time = 0
-        self.all_remove_batch_time = 0
-        self.all_merge_batch_time = 0
-        self.all_pause_batch_time = 0
-        self.all_after_process_time = 0
-        self.all_sample_time = 0
+        # self.all_add_batch_time = 0
+        # self.all_filter_batch_time = 0
+        # self.all_remove_batch_time = 0
+        # self.all_merge_batch_time = 0
+        # self.all_pause_batch_time = 0
+        # self.all_after_process_time = 0
+        # self.all_sample_time = 0
         set_random_seed(2147483647)
         return
     
     # @calculate_time(show=True, min_cost_ms=0.1)
     def exposed_add_batch(self, batch_id, reqs, dtype):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         if self.world_size != 1:
             batch_id, reqs, dtype = obtain(batch_id), obtain(reqs), obtain(dtype)
         import torch
@@ -218,9 +218,9 @@ class ModelRpcServer(rpyc.Service):
         for req_id in batch_data.request_ids:
             req_obj : InferReq  = requests_mapping[req_id]
             ans[req_id] = (req_obj.req_status, req_obj.cur_kv_len)
-        end_time  = time.perf_counter()
-        self.all_add_batch_time += end_time - start_time
-        print(f"add batch: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_add_batch_time} ")
+        # end_time  = time.perf_counter()
+        # self.all_add_batch_time += end_time - start_time
+        # print(f"add batch: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_add_batch_time} ")
         return pickle.dumps(ans)
     
     @calculate_time(show=False, min_cost_ms=300)
@@ -229,25 +229,25 @@ class ModelRpcServer(rpyc.Service):
 
     @calculate_time(show=True, min_cost_ms=200)
     def exposed_decode_batch(self, batch_id, req_ids = None, next_token_ids = None):
-        start_time = time.perf_counter()
-        print(f"batch_id type : {type(batch_id)}, req_ids type: {type(req_ids)}")
-        print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
+        # start_time = time.perf_counter()
+        # print(f"batch_id type : {type(batch_id)}, req_ids type: {type(req_ids)}")
+        # print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
         if req_ids is not None and next_token_ids is not None:
             req_ids = json.loads(req_ids)
             next_token_ids = json.loads(next_token_ids)
         if self.is_splitfuse_mode:
             if req_ids is not None and next_token_ids is not None:
                 self.exposed_add_tokens(req_ids, next_token_ids)
-                end_time = time.perf_counter()
-                self.add_token_all_times += end_time - start_time
-                print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
+                # end_time = time.perf_counter()
+                # self.add_token_all_times += end_time - start_time
+                # print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
             return self.splitfuse_forward(batch_id)
         else:
             return self.forward(batch_id, is_prefill=False)
 
     # @calculate_time(show=True, min_cost_ms=0.1)
     def exposed_filter_batch(self, batch_id, req_id_list, finished_req_id_list):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         # if self.world_size != 1:
         batch_id, req_id_list, finished_req_id_list = obtain(batch_id), json.loads(req_id_list), json.loads(finished_req_id_list)
         # print("filter old size:", len(batch.reqs), "new size:", len(req_id_list))
@@ -255,47 +255,47 @@ class ModelRpcServer(rpyc.Service):
         filter_batch = batch.filter(req_id_list, finished_req_id_list)
         del batch
         self.cache[batch_id] = filter_batch
-        end_time  = time.perf_counter()
-        self.all_filter_batch_time += end_time - start_time
-        print(f"filter batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_filter_batch_time} ")
+        # end_time  = time.perf_counter()
+        # self.all_filter_batch_time += end_time - start_time
+        # print(f"filter batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_filter_batch_time} ")
         return
 
     def exposed_pause_reqs(self, batch_id, req_list):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         if self.world_size != 1:
             batch_id, req_list = obtain(batch_id), obtain(req_list)
         batch1 = self.cache.pop(batch_id)
         batch2 = batch1.pause_reqs(req_list)
         self.cache[batch_id] = batch2
         del batch1
-        end_time  = time.perf_counter()
-        self.all_pause_batch_time += end_time - start_time
-        print(f"pause batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_pause_batch_time} ")
+        # end_time  = time.perf_counter()
+        # self.all_pause_batch_time += end_time - start_time
+        # print(f"pause batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_pause_batch_time} ")
         return
 
     # @calculate_time(show=True, min_cost_ms=0.1)
     def exposed_merge_batch(self, batch_id1, batch_id2):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         batch1 = self.cache.pop(batch_id1)
         batch2 = self.cache.pop(batch_id2)
         m_batch = InferBatch.merge(batch1, batch2)
         del batch1
         del batch2
         self.cache[batch_id1] = m_batch
-        end_time  = time.perf_counter()
-        self.all_merge_batch_time += end_time - start_time
-        print(f"merge  batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_merge_batch_time} ")
+        # end_time  = time.perf_counter()
+        # self.all_merge_batch_time += end_time - start_time
+        # print(f"merge  batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_merge_batch_time} ")
         return
 
     # @calculate_time(show=True, min_cost_ms=10)
     def exposed_remove_batch(self, batch_id):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         batch = self.cache.pop(batch_id)
         batch.free_self()
         del batch
-        end_time  = time.perf_counter()
-        self.all_remove_batch_time += end_time - start_time
-        print(f"remove batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_remove_batch_time} ")
+        # end_time  = time.perf_counter()
+        # self.all_remove_batch_time += end_time - start_time
+        # print(f"remove batch : {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.all_remove_batch_time} ")
         # torch.cuda.empty_cache()
         return
     
@@ -431,7 +431,7 @@ class ModelRpcServer(rpyc.Service):
 
     # @calculate_time(show=True, min_cost_ms=200)
     def splitfuse_forward(self, batch_id):
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
         output_dict = {}
         # print(f"pp_rank: {self.pp_rank}, batch_id:{batch_id}")
         batch: InferBatch = self.cache.pop(batch_id)
@@ -442,18 +442,18 @@ class ModelRpcServer(rpyc.Service):
         logits = self.model.splitfuse_forward(**kwargs)
         # print(f"pp_rank: {self.pp_rank}, batch_id:{batch_id} done")
         if self.pp_size != 1 and self.pp_rank == 0:
-            print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
+            # print(f"rank: {self.pp_rank} insert batchId {batch.batch_id}")
             self.cache[batch.batch_id] = batch
-            end_time = time.perf_counter()
-            print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}, batch_size: {len(batch.request_ids)}")
+            # end_time = time.perf_counter()
+            # print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}, batch_size: {len(batch.request_ids)}")
             return output_dict
-        after_process_start_time = time.perf_counter()
-        sample_start_time = time.perf_counter()
+        # after_process_start_time = time.perf_counter()
+        # sample_start_time = time.perf_counter()
         if self.pp_size != 1 and self.pp_rank != self.pp_size - 1:
             next_token_ids, next_token_probs = torch.full((len(all_reqs),), 13), torch.full((len(all_reqs),), 0.1516)
         else: 
             next_token_ids, next_token_probs = sample(logits, all_reqs)
-        sample_end_time = time.perf_counter()
+        # sample_end_time = time.perf_counter()
             
         next_token_ids = next_token_ids.detach().cpu().numpy()
         next_token_logprobs = torch.log(next_token_probs).detach().cpu().numpy()
@@ -490,18 +490,18 @@ class ModelRpcServer(rpyc.Service):
                     assert False, "error state"
             index += 1    
         self.cache[batch.batch_id] = batch
-        after_process_end_time = time.perf_counter()
-        pickle_start_time = time.perf_counter()
+        # after_process_end_time = time.perf_counter()
+        # pickle_start_time = time.perf_counter()
         if self.pp_size != 1:
             output_dict = pickle.dumps(output_dict)
         pickle_end_time = time.perf_counter()
-        end_time = time.perf_counter()
-        self.all_after_process_time += after_process_end_time - after_process_start_time
-        self.all_sample_time += sample_end_time - sample_start_time
-        print(f"splitfuse forward rank: {self.pp_rank} insert batchId {batch.batch_id}")
-        print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}, pickle spend time: {pickle_end_time - pickle_start_time}, after process time: {after_process_end_time - after_process_start_time},  batch_size: {len(batch.request_ids)}")
-        print(f"splitfuse forward rank after process time: {self.all_after_process_time}")
-        print(f"splitfuse forward rank sample time: {self.all_sample_time}")
+        # end_time = time.perf_counter()
+        # self.all_after_process_time += after_process_end_time - after_process_start_time
+        # self.all_sample_time += sample_end_time - sample_start_time
+        # print(f"splitfuse forward rank: {self.pp_rank} insert batchId {batch.batch_id}")
+        # print(f"splitfuse forward rank: {self.pp_rank} spend time :{ end_time - start_time}, pickle spend time: {pickle_end_time - pickle_start_time}, after process time: {after_process_end_time - after_process_start_time},  batch_size: {len(batch.request_ids)}")
+        # print(f"splitfuse forward rank after process time: {self.all_after_process_time}")
+        # print(f"splitfuse forward rank sample time: {self.all_sample_time}")
         return output_dict
 
 
@@ -543,8 +543,8 @@ class ModelRpcClient:
         self.decode_req_que = None
         self.decode_resp_que = None
         self.init_resp_que = None
-        self.obtain_all_time = 0
-        self.decode_all_time = 0
+        # self.obtain_all_time = 0
+        # self.decode_all_time = 0
         return
 
     async def init_model(self, kvargs):
@@ -563,7 +563,7 @@ class ModelRpcClient:
             return ans
         
     async def pp_init_batch(self, batch, reqs, tp_rank):
-        print(f"pp_init_batch")
+        # print(f"pp_init_batch")
         await self.decode_req_que.put(("init_batch", batch, reqs, tp_rank))
 
     async def prefill_batch(self, batch_id):
@@ -574,7 +574,7 @@ class ModelRpcClient:
             return ans
 
     async def pp_decode_batch(self, batch_id, req_ids = None, next_token_ids = None, rank_id = -1, flag = False):
-        print(f"add_req_que: {rank_id}")
+        # print(f"add_req_que: {rank_id}")
         await self.decode_req_que.put(("decode_batch", batch_id, req_ids, next_token_ids, rank_id, flag))
     
     async def decode_batch(self, batch_id):
@@ -592,36 +592,37 @@ class ModelRpcClient:
         if self.decode_req_que is None or self.decode_resp_que is None:
             self.init_que()
         while True:
-            print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
+            # print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
             data = await self.decode_req_que.get()
             if data[0] == "decode_batch":
                 batch_id, req_ids, next_token_ids, rank_id, flag = data[1:]
-                start_time = time.perf_counter()
-                print(f"start decode batch, rank _id : {rank_id}")
+                # start_time = time.perf_counter()
+                # print(f"start decode batch, rank _id : {rank_id}")
                 ans = self._decode_batch(batch_id, json.dumps(req_ids), json.dumps(next_token_ids))
                 true_ans = await ans
-                end_time = time.perf_counter()
-                self.decode_all_time += end_time - start_time
-                print(f"decode batch: {rank_id}, spend time: {end_time - start_time}")
+                # end_time = time.perf_counter()
+                # self.decode_all_time += end_time - start_time
+                # print(f"decode batch: {rank_id}, spend time: {end_time - start_time}")
                 if flag:
-                    start_time = time.perf_counter()
+                    # start_time = time.perf_counter()
                     # print(type(true_ans))
                     # if is_ref(true_ans):
                     #     print("is netref")
                     dd = pickle.loads(true_ans)
                     #print(dd)
-                    end_time = time.perf_counter()
-                    self.obtain_all_time += end_time - start_time
-                    self.decode_all_time += end_time - start_time
-                    print(f"decode batch: {rank_id}, obtain spend time: {end_time - start_time}, flag: {flag}, obtain_all_time: {self.obtain_all_time}, decode_all_time: {self.decode_all_time}")
+                    # end_time = time.perf_counter()
+                    # self.obtain_all_time += end_time - start_time
+                    # self.decode_all_time += end_time - start_time
+                    # print(f"decode batch: {rank_id}, obtain spend time: {end_time - start_time}, flag: {flag}, obtain_all_time: {self.obtain_all_time}, decode_all_time: {self.decode_all_time}")
                     await self.decode_resp_que.put(dd)
                 else:
-                    print(f"decode_all_time: {self.decode_all_time}")
+                    pass
+                    # print(f"decode_all_time: {self.decode_all_time}")
             elif data[0] == "init_batch":
-                print("init_batch")
+                # print("init_batch")
                 batch, reqs, tp_rank = data[1:]
                 ans = await self._add_batch(batch.batch_id, reqs, "fp16")
-                print("init_batch done")
+                # print("init_batch done")
                 dd = pickle.loads(ans)
                 if tp_rank == 0:   
                     await self.init_resp_que.put(dd)
@@ -629,7 +630,7 @@ class ModelRpcClient:
                 batch_id, req_id_list, finished_req_id_list = data[1:]
                 await self._filter_batch(batch_id, json.dumps(req_id_list), json.dumps(finished_req_id_list))
             elif data[0] == "pause_reqs":
-                batch_id, reqs_list = data[-1]
+                batch_id, reqs_list = data[1:]
                 await self._pause_reqs(batch_id, reqs_list)
             elif data[0] == "merge_batch":
                 batch_id1, batch_id2 = data[1:]
@@ -649,7 +650,7 @@ class ModelRpcClient:
             return 
 
     async def pp_filter_batch(self, batch_id, req_id_list, finished_req_id_list):
-        print(f"pp_filter_batch")
+        # print(f"pp_filter_batch")
         await self.decode_req_que.put(("filter_batch", batch_id, req_id_list, finished_req_id_list))
 
     async def pause_reqs(self, batch_id, reqs_list):
@@ -661,7 +662,7 @@ class ModelRpcClient:
             return
         
     async def pp_pause_reqs(self, batch_id, reqs_list):
-        print(f"pp_pause_reqs")
+        print(f"pause_reqs")
         await self.decode_req_que.put(("pause_reqs", batch_id, reqs_list))
 
     async def merge_batch(self, batch_id1, batch_id2):
@@ -673,7 +674,7 @@ class ModelRpcClient:
             return
     
     async def pp_merge_batch(self, batch_id1, batch_id2):
-        print(f"pp_merge_batch")
+        # print(f"pp_merge_batch")
         await self.decode_req_que.put(("merge_batch", batch_id1, batch_id2))
 
     async def remove_batch(self, batch_id):
@@ -685,7 +686,7 @@ class ModelRpcClient:
             return
         
     async def pp_remove_batch(self, batch_id):
-        print(f"pp_remove_batch")
+        # print(f"pp_remove_batch")
         await self.decode_req_que.put(("remove_batch", batch_id))
 
 

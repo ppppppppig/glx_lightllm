@@ -318,7 +318,9 @@ class TpPartBaseModel:
     @final
     def _splitfuse_forward(self, input_ids, infer_state: SplitFuseInferStateInfo):
         cuda_input_ids = input_ids
+        print(f"len cuda_input_ids: {len(cuda_input_ids)}")
         input_embs = self.pre_infer.splitfuse_forward(cuda_input_ids, infer_state, self.pre_post_weight)
+        print(f"shape input embs: {input_embs.shape}")
         for i in range(self.layers_num):
             input_embs = self.layers_infer[i].splitfuse_forward(input_embs, infer_state, self.trans_layers_weight[i])
         predict_logics = self.post_infer.splitfuse_forward(input_embs, infer_state, self.pre_post_weight, return_logics=True)

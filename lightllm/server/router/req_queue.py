@@ -113,6 +113,7 @@ class ReqQueue:
                 can_run_list.append(req)
                 new_batch_first_router_need_tokens += req_first_router_need_tokens
                 if req.req_status in [ReqRunStatus.PAUSED_AND_KVKEEP, ReqRunStatus.PAUSED_AND_OFFLOAD]:
+                    print("pause request id pop")
                     self.pause_req_dict.pop(req.request_id)
             else:
                 break

@@ -62,7 +62,8 @@ class Req:
                 "multimodal_params": self.multimodal_params.to_dict(),
                 "prompt_cache_len": self.prompt_cache_len,
                 "prompt_cache_req_id": self.prompt_cache_req_id,
-                "req_status": self.req_status}
+                "req_status": self.req_status,
+                "output_ids": self.output_ids}
     
     def to_req_detokenization_state(self):
         out = ReqDetokenizationState(self.request_id, self.prompt_ids, self.max_output_len, self.sample_params.ignore_eos)

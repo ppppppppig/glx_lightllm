@@ -35,10 +35,14 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
         return input_embdings
 
     def token_forward(self, input_ids, infer_state: LlamaInferStateInfo, layer_weight: LlamaPreAndPostLayerWeight):
+        print(1)
         input_mask = torch.logical_or(self.vob_start_id_ > input_ids, input_ids >= self.vob_end_id_)
+        print(2)
         tmp_input_ids = (input_ids - self.vob_start_id_)
         tmp_input_ids[input_mask] = 0
+        print(f"tmp_input_ids shape: {tmp_input_ids.shape}, input_ids shape: {input_ids.shape}")
         input_embdings = torch.embedding(layer_weight.wte_weight_, tmp_input_ids, padding_idx=-1)
+        print(f"input_embdings shape: {input_embdings.shape}")
         input_embdings[input_mask] = 0.0
         if self.tp_size_ > 1:
             dist.all_reduce(input_embdings, op=dist.ReduceOp.SUM, async_op=False, group=get_all_reduce_groups(self.gpu_rank_))
@@ -64,8 +68,11 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
 
     # @mark_cost_time("splitfuse forward")
     def splitfuse_forward(self, input_ids, infer_state: SplitFuseInferStateInfo, layer_weight: LlamaPreAndPostLayerWeight):
+        print(f"splitfuse_forward")
         if self.pp_size_ is None or self.pp_rank_ == 0:
+            print(f"splitfuse_forward1")
             return self.token_forward(input_ids, infer_state, layer_weight)
         else:
+            print(f"splitfuse_forward2")
             return self.pipeline_model_parallel_recv_tensor()
     

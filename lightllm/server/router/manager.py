@@ -36,6 +36,7 @@ class RouterManager:
         
         self.pause_strategy = Fcfs()
         self.batch_num = self.pp_size
+        self.pp_max_total_token_num = self.max_total_token_num // self.batch_num - 200
         self.running_batch_list: Batch = [None] * self.batch_num
         self.wait_to_return = [None] * self.batch_num
         self.decode_carry_message = [(None, None)] * self.batch_num
@@ -43,7 +44,8 @@ class RouterManager:
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
         self.has_wait_tokens_list = [0] * self.batch_num
-        self.max_wait_tokens = 5
+        self.max_wait_tokens = 10
+        
         self.counter_count = 0
         self.all_times_add_tokens = 0
         self.all_times_handle_finish = 0
@@ -276,7 +278,7 @@ class RouterManager:
             await self._handle_finish_req(self.running_batch_list[rank_id], unfinished_req_ids, finished_req_ids)
             end_time = time.perf_counter()
             self.all_times_handle_finish += end_time - endd_time
-            print(f"all_times_handle_finish:{self.all_times_handle_finish}")
+            # print(f"all_times_handle_finish:{self.all_times_handle_finish}")
             # print("handle finish req")
             self._pp_filter_runing_batch(rank_id)
             # 一些更进一步的处理
@@ -379,7 +381,7 @@ class RouterManager:
             req_to_req_status = await self.model_rpcs[0].init_resp_que.get()
             
         else:
-            print("ffffffffffffff")
+            # print("ffffffffffffff")
             rets = [self.model_rpcs[tp_rank].init_batch(batch.batch_id, reqs) for tp_rank in range(self.world_size)]
             ans = await asyncio.gather(*rets)
             if self.world_size != 1:
@@ -475,7 +477,7 @@ class RouterManager:
 
     async def _remove_batch(self, batch):
         # print("remove_batch")
-        print(f"remove batch {batch.batch_id}")
+        # print(f"remove batch {batch.batch_id}")
         if self.pp_size != 1:
             rets = [self.model_rpcs[tp_rank].pp_remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
         else:
@@ -505,7 +507,7 @@ class RouterManager:
     
     async def _pp_handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids):
         if len(finished_req_ids) != 0:
-            print("fuck finished req")
+            # print("fuck finished req")
             if batch.is_clear():
                 await self._remove_batch(batch)
             else:
@@ -560,7 +562,8 @@ class RouterManager:
         
     def _can_decode(self, batch: Batch):
         total_used_tokens = self.prompt_cache_used_tokens + batch.batch_used_tokens + self.req_queue.pause_req_used_tokens
-        remaining_tokens = self.max_total_token_num - total_used_tokens
+        remaining_tokens = self.pp_max_total_token_num - total_used_tokens
+        print(f"remaining_tokens: {remaining_tokens}, pp_max_total_token_num: {self.pp_max_total_token_num}, total_used_tokens: {total_used_tokens}, batch_dcode_need_tokens: {batch.batch_decode_need_tokens}")
         return batch.batch_decode_need_tokens <= remaining_tokens
         
     def _send_to_detokenization_proc(self, batch: Batch, req_ans):

@@ -50,6 +50,7 @@ def rotary_emb_fwd(q, cos, sin):
     total_len = q.shape[0]
     head_num = q.shape[1]
     head_dim = q.shape[2]
+    print(f"q shape: {q.shape}, cos shape: {cos.shape[0]}")
     assert q.shape[0] == cos.shape[0] and q.shape[0] == sin.shape[0], f"q shape {q.shape} cos shape {cos.shape}"
     BLOCK_HEAD = 4
     BLOCK_SEQ = 32
