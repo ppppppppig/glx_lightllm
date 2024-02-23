@@ -36,7 +36,7 @@ class RouterManager:
         
         self.pause_strategy = Fcfs()
         self.batch_num = self.pp_size
-        self.pp_max_total_token_num = self.max_total_token_num // self.batch_num - 200
+        self.pp_max_total_token_num = self.max_total_token_num // self.batch_num
         self.running_batch_list: Batch = [None] * self.batch_num
         self.wait_to_return = [None] * self.batch_num
         self.decode_carry_message = [(None, None)] * self.batch_num
@@ -259,12 +259,12 @@ class RouterManager:
                 
                 # 使用这个结果更新下前面的结果
                 # print(f"req_to_out_statue: {req_to_out_status}")
-                # temp_rets = []
-                # for pp_rank in range(1):
-                #     for tp_rank in range(self.tp_size):
-                #         new_rank = tp_rank * self.pp_size + pp_rank
-                #         temp_rets.append(self.model_rpcs[new_rank].add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
-                         
+                temp_rets = []
+                for tp_rank in range(self.tp_size):
+                    new_rank = tp_rank * self.pp_size
+                    temp_rets.append(self.model_rpcs[new_rank].pp_add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
+                
+                await asyncio.gather(*temp_rets)
             else:
                 req_to_out_status = self.model_rpcs[0].decode_resp_que.get()
             self._update_out_status_to_batch(self.running_batch_list[rank_id], req_to_out_status)
@@ -448,11 +448,11 @@ class RouterManager:
                 for tp_rank in range(self.tp_size):
                     new_rank = tp_rank * self.pp_size + pp_rank
                     if tp_rank == self.tp_size - 1 and pp_rank == self.pp_size - 1:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, None, None, rank_id, True)))
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, True)))
                     elif pp_rank == 0:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, self.decode_carry_message[rank_id][0], self.decode_carry_message[rank_id][1], rank_id, False)))
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False)))
                     else:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, None, None, rank_id, False)))
+                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False)))
                         
             self.decode_carry_message[rank_id] = (None, None)
             return
@@ -563,7 +563,6 @@ class RouterManager:
     def _can_decode(self, batch: Batch):
         total_used_tokens = self.prompt_cache_used_tokens + batch.batch_used_tokens + self.req_queue.pause_req_used_tokens
         remaining_tokens = self.pp_max_total_token_num - total_used_tokens
-        print(f"remaining_tokens: {remaining_tokens}, pp_max_total_token_num: {self.pp_max_total_token_num}, total_used_tokens: {total_used_tokens}, batch_dcode_need_tokens: {batch.batch_decode_need_tokens}")
         return batch.batch_decode_need_tokens <= remaining_tokens
         
     def _send_to_detokenization_proc(self, batch: Batch, req_ans):

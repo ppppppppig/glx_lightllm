@@ -228,16 +228,11 @@ class ModelRpcServer(rpyc.Service):
         return self.forward(batch_id, is_prefill=True)
 
     @calculate_time(show=True, min_cost_ms=200)
-    def exposed_decode_batch(self, batch_id, req_ids = None, next_token_ids = None):
+    def exposed_decode_batch(self, batch_id):
         # start_time = time.perf_counter()
         # print(f"batch_id type : {type(batch_id)}, req_ids type: {type(req_ids)}")
         # print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
-        if req_ids is not None and next_token_ids is not None:
-            req_ids = json.loads(req_ids)
-            next_token_ids = json.loads(next_token_ids)
         if self.is_splitfuse_mode:
-            if req_ids is not None and next_token_ids is not None:
-                self.exposed_add_tokens(req_ids, next_token_ids)
                 # end_time = time.perf_counter()
                 # self.add_token_all_times += end_time - start_time
                 # print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
@@ -573,9 +568,9 @@ class ModelRpcClient:
         else:
             return ans
 
-    async def pp_decode_batch(self, batch_id, req_ids = None, next_token_ids = None, rank_id = -1, flag = False):
+    async def pp_decode_batch(self, batch_id, flag = False):
         # print(f"add_req_que: {rank_id}")
-        await self.decode_req_que.put(("decode_batch", batch_id, req_ids, next_token_ids, rank_id, flag))
+        await self.decode_req_que.put(("decode_batch", batch_id, flag))
     
     async def decode_batch(self, batch_id):
         ans = self._decode_batch(batch_id)
@@ -595,10 +590,10 @@ class ModelRpcClient:
             # print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
             data = await self.decode_req_que.get()
             if data[0] == "decode_batch":
-                batch_id, req_ids, next_token_ids, rank_id, flag = data[1:]
+                batch_id, flag = data[1:]
                 # start_time = time.perf_counter()
                 # print(f"start decode batch, rank _id : {rank_id}")
-                ans = self._decode_batch(batch_id, json.dumps(req_ids), json.dumps(next_token_ids))
+                ans = self._decode_batch(batch_id)
                 true_ans = await ans
                 # end_time = time.perf_counter()
                 # self.decode_all_time += end_time - start_time
@@ -638,7 +633,9 @@ class ModelRpcClient:
             elif data[0] == "remove_batch":
                 batch_id = data[-1]
                 await self._remove_batch(str(batch_id))
-                
+            elif data[0] == "add_tokens":
+                req_ids, next_token_ids = data[1:]
+                await self._add_tokens(req_ids, next_token_ids)
 
 
     async def filter_batch(self, batch_id, req_id_list, finished_req_id_list):
@@ -688,7 +685,17 @@ class ModelRpcClient:
     async def pp_remove_batch(self, batch_id):
         # print(f"pp_remove_batch")
         await self.decode_req_que.put(("remove_batch", batch_id))
-
+        
+    async def add_tokens(self, req_ids, next_token_ids):
+        ans = self._add_tokens(req_ids, next_token_ids)
+        if self.use_rpc:
+            await ans
+            return
+        else:
+            return
+    
+    async def pp_add_tokens(self, req_ids, next_token_ids):
+        await self.decode_req_que.put(("add_tokens", req_ids, next_token_ids))
 
 def _init_env(port):
     from rpyc.utils.server import ThreadedServer

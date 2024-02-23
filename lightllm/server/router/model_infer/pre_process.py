@@ -178,7 +178,7 @@ def splitfuse_prepare_decode_inputs(batch:InferBatch, splitfuse_block_size):
             "prefill_max_split_seq_len_in_batch" : prefill_max_split_seq_len_in_batch,
             "prefill_b_seq_len" : torch.tensor(prefill_b_seq_len, dtype=torch.int32, device="cuda")
         }
-    print(f"len input ids: {len(input_ids)}")
-    print(f"input ids: {input_ids}")
+    # print(f"len input ids: {len(input_ids)}")
+    # print(f"input ids: {input_ids}")
     return kwargs, decode_reqs, prefill_reqs
     
