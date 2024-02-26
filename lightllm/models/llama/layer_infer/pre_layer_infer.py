@@ -20,7 +20,7 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
         tp_vocab_size_ = network_config["vocab_size"] // self.tp_size_
         self.vob_start_id_ = tp_vocab_size_ * self.tp_rank_
         self.vob_end_id_ = tp_vocab_size_ * (self.tp_rank_ + 1)
-        self.gpu_rank_ = tp_rank * pp_size + pp_rank
+        self.gpu_rank_ = pp_rank * tp_size + tp_rank
         return
 
     @mark_cost_time("pre context forward")
@@ -47,7 +47,7 @@ class LlamaPreLayerInfer(PreLayerInferTpAndPpl):
     
     def pipeline_model_parallel_recv_tensor(self):
         src_rank = self.pre_rank_
-        dst_rank = self.tp_rank_ * self.pp_size_ + self.pp_rank_
+        dst_rank = self.pp_rank_ * self.tp_size_ + self.tp_rank_
         pair_group = get_pair_groups(src_rank, dst_rank)
         assert pair_group is not None, "wrong: pair group is None"
 

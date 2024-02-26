@@ -181,7 +181,7 @@ class TransformerLayerInferTpAndPpl(TransformerLayerInfer):
         if pp_size is None:
             self.gpu_rank_ = self.tp_rank_
         else:
-            self.gpu_rank_ = tp_rank * pp_size + pp_rank
+            self.gpu_rank_ = pp_rank * tp_size + tp_rank
         self.tp_size_ = tp_size
         return
     

@@ -24,7 +24,7 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
         self.eps_ = network_config["rms_norm_eps"]
         self.vocab_size_ = network_config["vocab_size"]
         self.embed_dim_ = network_config["n_embed"]
-        self.gpu_rank_ = tp_rank * pp_size + pp_rank
+        self.gpu_rank_ = pp_rank * tp_size + pp_rank
         self.length_list_ = []   # 广播未完成前，tensor不能删除，否则会引发未定义的行为
         self.shape_list_ = []
         self.input_embeddings_list_ = []
@@ -98,7 +98,7 @@ class LlamaPostLayerInfer(PostLayerInferTpAndPpl):
     
     def pipeline_model_parallel_send_tensor_list(self, input_embdings):
         self.filter_out_complete_broadcast()
-        src_rank = self.tp_rank_ * self.pp_size_ + self.pp_rank_
+        src_rank = self.pp_rank_ * self.tp_size_ + self.tp_rank_
         dst_rank = self.post_rank_
         pair_group = get_pair_groups(src_rank, dst_rank)
         length = torch.tensor(len(input_embdings.shape), dtype=torch.int).cuda(torch.cuda.current_device())

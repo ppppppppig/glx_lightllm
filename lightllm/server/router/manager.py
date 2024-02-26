@@ -36,10 +36,18 @@ class RouterManager:
         
         self.pause_strategy = Fcfs()
         self.batch_num = self.pp_size
-        self.pp_max_total_token_num = self.max_total_token_num // self.batch_num
+        self.pp_max_total_token_num = self.max_total_token_num // self.batch_num 
         self.running_batch_list: Batch = [None] * self.batch_num
         self.wait_to_return = [None] * self.batch_num
         self.decode_carry_message = [(None, None)] * self.batch_num
+        self.filter_batch_id = [None] * self.batch_num
+        self.filter_unfinished_req_ids = [None] * self.batch_num
+        self.filter_finished_req_ids = [None] * self.batch_num
+        self.remove_batch_id = [None] * self.batch_num
+        self.merge_batch1_id = [None] * self.batch_num
+        self.merge_batch2_id = [None] * self.batch_num
+        self.pause_batch_id = [None] * self.batch_num
+        self.pause_reqs_info = [None] * self.batch_num
         self.running_batch: Batch = None
         self.eos_id = args.eos_id
         self.has_wait_tokens = 0
@@ -76,9 +84,9 @@ class RouterManager:
     def compute_pre_and_post_rank(self, tp_rank, pp_rank):
         ans_left, ans_right = -1, -1
         if pp_rank:
-            ans_left = tp_rank * self.pp_size + pp_rank - 1
+            ans_left = pp_rank * self.tp_size + tp_rank - self.tp_size
         if pp_rank != self.pp_size - 1:
-            ans_right = tp_rank * self.pp_size + pp_rank + 1
+            ans_right = pp_rank * self.tp_size + tp_rank + self.tp_size
         return [ans_left, ans_right]
         
     def compute_all_reduce_rank(self, tp_rank, pp_rank):
@@ -116,7 +124,7 @@ class RouterManager:
             tp_size = self.world_size // self.pp_size
             for pp_rank in range(self.pp_size):
                 for tp_rank in range(tp_size):  # async init model process
-                    new_rank = tp_rank * self.pp_size + pp_rank
+                    new_rank = pp_rank * self.tp_size + tp_rank
                     kvargs = {
                         "rank_id" : tp_rank,
                         "tp_size" : self.tp_size,
@@ -247,7 +255,6 @@ class RouterManager:
         事件处理循环
         """
         if self.wait_to_return[rank_id] is not None:
-            await asyncio.gather(*self.wait_to_return[rank_id])
             # print(f"rank_id: {rank_id} end")
             self.wait_to_return[rank_id] = None
             # print(f"rank_id: {rank_id} has done")
@@ -259,12 +266,12 @@ class RouterManager:
                 
                 # 使用这个结果更新下前面的结果
                 # print(f"req_to_out_statue: {req_to_out_status}")
-                temp_rets = []
-                for tp_rank in range(self.tp_size):
-                    new_rank = tp_rank * self.pp_size
-                    temp_rets.append(self.model_rpcs[new_rank].pp_add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
-                
-                await asyncio.gather(*temp_rets)
+                # temp_rets = []
+                # for pp_rank in range(1):
+                #     for tp_rank in range(self.tp_size):
+                #         new_rank =  + pp_rank
+                #         temp_rets.append(self.model_rpcs[new_rank].add_tokens(list(req_to_out_status.keys()), [value[2] for value in req_to_out_status.values()]))
+                         
             else:
                 req_to_out_status = self.model_rpcs[0].decode_resp_que.get()
             self._update_out_status_to_batch(self.running_batch_list[rank_id], req_to_out_status)
@@ -275,7 +282,7 @@ class RouterManager:
             # await asyncio.gather(*temp_rets) 
             endd_time = time.perf_counter() 
             # print("add token done")
-            await self._handle_finish_req(self.running_batch_list[rank_id], unfinished_req_ids, finished_req_ids)
+            await self._handle_finish_req(self.running_batch_list[rank_id], unfinished_req_ids, finished_req_ids, rank_id)
             end_time = time.perf_counter()
             self.all_times_handle_finish += end_time - endd_time
             # print(f"all_times_handle_finish:{self.all_times_handle_finish}")
@@ -306,7 +313,7 @@ class RouterManager:
                 self.stats_tool_list[rank_id].count_prompt_tokens(new_mini_batch)
                 await self._prefill_batch(new_mini_batch)
                 if not new_mini_batch.is_clear():
-                    await self._merge_batch(self.running_batch_list[rank_id], new_mini_batch)
+                    await self._merge_batch(self.running_batch_list[rank_id], new_mini_batch, rank_id)
                     self.running_batch_list[rank_id].merge(new_mini_batch)
                 return True
 
@@ -322,7 +329,7 @@ class RouterManager:
         else:
             # pause strategy
             paused_reqs = select_paused_reqs(self.running_batch_list[rank_id], self.pause_strategy, self.req_queue, self.max_total_token_num)
-            await self._pause_reqs(self.running_batch_list[rank_id], paused_reqs)
+            await self._pause_reqs(self.running_batch_list[rank_id], paused_reqs, rank_id)
             logger.debug(f"pasued req num: {len(self.req_queue.pause_req_dict)}")
             self.has_wait_tokens_list[rank_id] = 0
             return True
@@ -446,73 +453,81 @@ class RouterManager:
             # print(f"rank_id: {rank_id} start, batch_id: {batch.batch_id}")
             for pp_rank in range(self.pp_size):
                 for tp_rank in range(self.tp_size):
-                    new_rank = tp_rank * self.pp_size + pp_rank
+                    new_rank = pp_rank * self.tp_size + tp_rank
                     if tp_rank == self.tp_size - 1 and pp_rank == self.pp_size - 1:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, True)))
+                        self.wait_to_return[rank_id].append(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, True, None, None, self.filter_batch_id[rank_id], self.filter_unfinished_req_ids[rank_id], self.filter_finished_req_ids[rank_id], self.remove_batch_id[rank_id], self.merge_batch1_id[rank_id], self.merge_batch2_id[rank_id], self.pause_batch_id[rank_id], self.pause_reqs_info[rank_id]))
                     elif pp_rank == 0:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False)))
+                        self.wait_to_return[rank_id].append(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False, self.decode_carry_message[rank_id][0], self.decode_carry_message[rank_id][1], self.filter_batch_id[rank_id], self.filter_unfinished_req_ids[rank_id], self.filter_finished_req_ids[rank_id], self.remove_batch_id[rank_id], self.merge_batch1_id[rank_id], self.merge_batch2_id[rank_id], self.pause_batch_id[rank_id], self.pause_reqs_info[rank_id]))
                     else:
-                        self.wait_to_return[rank_id].append(asyncio.ensure_future(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False)))
-                        
+                        self.wait_to_return[rank_id].append(self.model_rpcs[new_rank].pp_decode_batch(batch.batch_id, False, None, None, self.filter_batch_id[rank_id], self.filter_unfinished_req_ids[rank_id], self.filter_finished_req_ids[rank_id], self.remove_batch_id[rank_id], self.merge_batch1_id[rank_id], self.merge_batch2_id[rank_id], self.pause_batch_id[rank_id], self.pause_reqs_info[rank_id]))
+            await asyncio.gather(*self.wait_to_return[rank_id])
             self.decode_carry_message[rank_id] = (None, None)
+            self.filter_batch_id[rank_id] = None
+            self.filter_unfinished_req_ids[rank_id] = None
+            self.filter_finished_req_ids[rank_id] = None
+            self.remove_batch_id[rank_id] = None
+            self.merge_batch1_id[rank_id] = None
+            self.merge_batch2_id[rank_id] = None
+            self.pause_batch_id[rank_id] = None
+            self.pause_reqs_info[rank_id] = None
             return
                     
 
-    async def _filter_batch(self, batch: Batch, unfinished_req_ids, finished_req_ids: List):
+    async def _filter_batch(self, batch: Batch, unfinished_req_ids, finished_req_ids: List, rank_id = None):
         # print("filter_batch")
         if self.pp_size != 1:
-            rets = [self.model_rpcs[tp_rank].pp_filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
+            self.filter_batch_id[rank_id] = batch.batch_id
+            self.filter_unfinished_req_ids[rank_id] = unfinished_req_ids
+            self.filter_finished_req_ids[rank_id] = finished_req_ids
+            # rets = [self.model_rpcs[tp_rank].pp_filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
         else:
             rets = [self.model_rpcs[tp_rank].filter_batch(batch.batch_id, unfinished_req_ids, finished_req_ids) for tp_rank in range(self.world_size)]
-        await asyncio.gather(*rets)
+            await asyncio.gather(*rets)
         return
 
-    async def _merge_batch(self, batch1, batch2):
+    async def _merge_batch(self, batch1, batch2, rank_id = None):
         if self.pp_size != 1:
-            rets = [self.model_rpcs[tp_rank].pp_merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
+            self.merge_batch1_id[rank_id] = batch1.batch_id
+            self.merge_batch2_id[rank_id] = batch2.batch_id
+            # rets = [self.model_rpcs[tp_rank].pp_merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
         else:
             rets = [self.model_rpcs[tp_rank].merge_batch(batch1.batch_id, batch2.batch_id) for tp_rank in range(self.world_size)]
-        await asyncio.gather(*rets)
+            await asyncio.gather(*rets)
         return
 
-    async def _remove_batch(self, batch):
+    async def _remove_batch(self, batch, rank_id = None):
         # print("remove_batch")
         # print(f"remove batch {batch.batch_id}")
         if self.pp_size != 1:
-            rets = [self.model_rpcs[tp_rank].pp_remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
+            self.remove_batch_id[rank_id] = batch.batch_id
+            # rets = [self.model_rpcs[tp_rank].pp_remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
         else:
             rets = [self.model_rpcs[tp_rank].remove_batch(batch.batch_id) for tp_rank in range(self.world_size)]
-        await asyncio.gather(*rets)
+            await asyncio.gather(*rets)
         return
     
-    async def _pause_reqs(self, batch: Batch, pasue_reqs):
+    async def _pause_reqs(self, batch: Batch, pasue_reqs, rank_id = None):
         pasue_reqs_info = [(r.request_id, r.req_status) for r in pasue_reqs]
         if self.pp_size != 1:
-            rets = [self.model_rpcs[tp_rank].pp_pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
+            self.pause_batch_id[rank_id] = batch.batch_id
+            self.pause_reqs_info[rank_id] = pasue_reqs_info
+            # rets = [self.model_rpcs[tp_rank].pp_pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
         else:
             rets = [self.model_rpcs[tp_rank].pause_reqs(batch.batch_id, pasue_reqs_info) for tp_rank in range(self.world_size)]
-        await asyncio.gather(*rets)
+            await asyncio.gather(*rets)
         return
 
-    async def _handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids):
+    async def _handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids, rank_id = None):
         if len(finished_req_ids) != 0:
             #print("fuck finished req")
             if batch.is_clear():
                 # print(f"remove_batch")
-                await self._remove_batch(batch)
+                await self._remove_batch(batch, rank_id)
             else:
                 # print(f"finished_req_ids: {finished_req_ids}")
-                await self._filter_batch(batch, unfinished_req_ids, finished_req_ids)
+                await self._filter_batch(batch, unfinished_req_ids, finished_req_ids, rank_id)
         return
     
-    async def _pp_handle_finish_req(self, batch: Batch, unfinished_req_ids, finished_req_ids):
-        if len(finished_req_ids) != 0:
-            # print("fuck finished req")
-            if batch.is_clear():
-                await self._remove_batch(batch)
-            else:
-                await self._filter_batch(batch, unfinished_req_ids, finished_req_ids)
-        return
 
     def start_decode_loop(self, loop):
         for client in self.model_rpcs:

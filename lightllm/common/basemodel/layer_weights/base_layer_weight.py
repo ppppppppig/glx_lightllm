@@ -33,5 +33,5 @@ class BaseLayerWeight:
         elif self.pp_size_ is None:
             return cpu_tensor.contiguous().to(self.data_type_).cuda(self.tp_rank_)
         else:
-            new_rank = self.tp_rank_ * self.pp_size_ + self.pp_rank_
+            new_rank = self.pp_rank_ * self.tp_size_ + self.tp_rank_
             return cpu_tensor.contiguous().to(self.data_type_).cuda(new_rank)

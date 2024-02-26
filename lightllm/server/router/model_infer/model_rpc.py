@@ -68,7 +68,7 @@ class ModelRpcServer(rpyc.Service):
         self.tp_size = kvargs.get("tp_size", 0)
         self.pre_and_post_rank = kvargs.get("pre_and_post_rank", [-1, -1])
         self.all_reduce_rank = kvargs.get("all_reduce_rank", [])
-        self.gpu_rank = self.tp_rank * self.pp_size + self.pp_rank
+        self.gpu_rank = self.pp_rank * self.tp_size + self.tp_rank
 
         self.cache = {}
         self.logger = init_logger(__name__)
@@ -84,7 +84,7 @@ class ModelRpcServer(rpyc.Service):
             
             # 构造tp的组
             for pp_rank in range(self.pp_size):
-                gpu_rank_list = [tp_rank * self.pp_size + pp_rank for tp_rank in range(self.tp_size)]
+                gpu_rank_list = [pp_rank * self.pp_size + tp_rank for tp_rank in range(self.tp_size)]
                 last_rank = None
                 for new_rank in gpu_rank_list:
                     if last_rank is None:
@@ -96,9 +96,9 @@ class ModelRpcServer(rpyc.Service):
             # 构造pp的组
             for tp_rank in range(self.tp_size):
                 for pp_rank in range(self.pp_size):
-                    new_rank = tp_rank * self.pp_size + pp_rank
-                    pre_rank = tp_rank * self.pp_size + pp_rank - 1 if pp_rank > 0 else None
-                    next_rank = tp_rank * self.pp_size + pp_rank + 1 if pp_rank < self.pp_size - 1 else None
+                    new_rank = pp_rank * self.tp_size + tp_rank
+                    pre_rank = new_rank - self.tp_size if pp_rank > 0 else None
+                    next_rank = new_rank + self.tp_size if pp_rank < self.pp_size - 1 else None
                     if pre_rank is not None:
                         pair_groups[(new_rank, pre_rank)] = pair_groups[(pre_rank, new_rank)]
                     if next_rank is not None:
@@ -228,11 +228,27 @@ class ModelRpcServer(rpyc.Service):
         return self.forward(batch_id, is_prefill=True)
 
     @calculate_time(show=True, min_cost_ms=200)
-    def exposed_decode_batch(self, batch_id):
+    def exposed_decode_batch(self, batch_id, req_ids = None, next_token_ids = None, filter_batch_id = None, filter_unfinished_req_ids = None, filter_finished_req_ids = None, remove_batch_id = None, merge_batch1_id = None, merge_batch2_id = None, pause_batch_id = None, pause_reqs_info = None):
         # start_time = time.perf_counter()
         # print(f"batch_id type : {type(batch_id)}, req_ids type: {type(req_ids)}")
         # print(f"req_ids: {req_ids}, next_token_ids: {next_token_ids}")
         if self.is_splitfuse_mode:
+            if req_ids is not None:
+                req_ids = json.loads(req_ids)
+                next_token_ids = json.loads(next_token_ids)
+                filter_unfinished_req_ids = json.loads(filter_unfinished_req_ids)
+                filter_finished_req_ids = json.loads(filter_finished_req_ids)
+                pause_reqs_info = pickle.loads(pause_reqs_info)
+            if req_ids is not None and next_token_ids is not None:
+                self.exposed_add_tokens(req_ids, next_token_ids)
+            if filter_batch_id is not None and filter_unfinished_req_ids is not None and filter_finished_req_ids is not None:
+                self.exposed_filter_batch(filter_batch_id, filter_unfinished_req_ids, filter_finished_req_ids)
+            if remove_batch_id is not None:
+                self.exposed_remove_batch(remove_batch_id)
+            if merge_batch1_id is not None and merge_batch2_id is not None:
+                self.exposed_merge_batch(merge_batch1_id, merge_batch2_id)
+            if pause_batch_id is not None and pause_reqs_info is not None:
+                self.exposed_pause_reqs(pause_batch_id, pause_reqs_info)
                 # end_time = time.perf_counter()
                 # self.add_token_all_times += end_time - start_time
                 # print(f"splitfuse add token: {self.pp_rank} spend time :{ end_time - start_time}. spend all time: {self.add_token_all_times} ")
@@ -244,7 +260,7 @@ class ModelRpcServer(rpyc.Service):
     def exposed_filter_batch(self, batch_id, req_id_list, finished_req_id_list):
         # start_time = time.perf_counter()
         # if self.world_size != 1:
-        batch_id, req_id_list, finished_req_id_list = obtain(batch_id), json.loads(req_id_list), json.loads(finished_req_id_list)
+        batch_id, req_id_list, finished_req_id_list = obtain(batch_id), obtain(req_id_list), obtain(finished_req_id_list)
         # print("filter old size:", len(batch.reqs), "new size:", len(req_id_list))
         batch = self.cache.pop(batch_id)
         filter_batch = batch.filter(req_id_list, finished_req_id_list)
@@ -568,9 +584,9 @@ class ModelRpcClient:
         else:
             return ans
 
-    async def pp_decode_batch(self, batch_id, flag = False):
+    async def pp_decode_batch(self, batch_id, flag, req_ids, next_token_ids, filter_batch_id, filter_unfinished_req_ids, filter_finished_req_ids, remove_batch_id, merge_batch1, merge_batch2, pause_batch_id, pause_reqs_info):
         # print(f"add_req_que: {rank_id}")
-        await self.decode_req_que.put(("decode_batch", batch_id, flag))
+        await self.decode_req_que.put(("decode_batch", batch_id, flag, req_ids, next_token_ids, filter_batch_id, filter_unfinished_req_ids, filter_finished_req_ids, remove_batch_id, merge_batch1, merge_batch2, pause_batch_id, pause_reqs_info))
     
     async def decode_batch(self, batch_id):
         ans = self._decode_batch(batch_id)
@@ -590,10 +606,10 @@ class ModelRpcClient:
             # print(f"start decode_batch_loop, que size: {self.decode_req_que.qsize()}")
             data = await self.decode_req_que.get()
             if data[0] == "decode_batch":
-                batch_id, flag = data[1:]
+                batch_id, flag, req_ids, next_token_ids, filter_batch_id, filter_unfinished_req_ids, filter_finished_req_ids, remove_batch_id, merge_batch1_id, merge_batch2_id, pause_batch_id, pause_reqs_info = data[1:]
                 # start_time = time.perf_counter()
                 # print(f"start decode batch, rank _id : {rank_id}")
-                ans = self._decode_batch(batch_id)
+                ans = self._decode_batch(batch_id, json.dumps(req_ids), json.dumps(next_token_ids), filter_batch_id, json.dumps(filter_unfinished_req_ids), json.dumps(filter_finished_req_ids), remove_batch_id, merge_batch1_id, merge_batch2_id, pause_batch_id, pickle.dumps(pause_reqs_info))
                 true_ans = await ans
                 # end_time = time.perf_counter()
                 # self.decode_all_time += end_time - start_time
@@ -633,13 +649,11 @@ class ModelRpcClient:
             elif data[0] == "remove_batch":
                 batch_id = data[-1]
                 await self._remove_batch(str(batch_id))
-            elif data[0] == "add_tokens":
-                req_ids, next_token_ids = data[1:]
-                await self._add_tokens(req_ids, next_token_ids)
+                
 
 
     async def filter_batch(self, batch_id, req_id_list, finished_req_id_list):
-        ans = self._filter_batch(batch_id, json.dumps(req_id_list), json.dumps(finished_req_id_list))
+        ans = self._filter_batch(batch_id, req_id_list, finished_req_id_list)
         if self.use_rpc:
             await ans
             return
@@ -685,17 +699,7 @@ class ModelRpcClient:
     async def pp_remove_batch(self, batch_id):
         # print(f"pp_remove_batch")
         await self.decode_req_que.put(("remove_batch", batch_id))
-        
-    async def add_tokens(self, req_ids, next_token_ids):
-        ans = self._add_tokens(req_ids, next_token_ids)
-        if self.use_rpc:
-            await ans
-            return
-        else:
-            return
-    
-    async def pp_add_tokens(self, req_ids, next_token_ids):
-        await self.decode_req_que.put(("add_tokens", req_ids, next_token_ids))
+
 
 def _init_env(port):
     from rpyc.utils.server import ThreadedServer
